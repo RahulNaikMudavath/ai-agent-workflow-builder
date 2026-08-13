@@ -12,6 +12,16 @@ app.use(express.json());
 
 app.use("/api", routes);
 
+
+app.use((err, req, res, next) => {
+  if (err instanceof SyntaxError && err.status === 400 && "body" in err) {
+    return res.status(400).json({
+      error: "Invalid JSON payload",
+    });
+  }
+  next(err);
+});
+
 app.get("/", (req, res) => {
   res.json({
     message: "AI Agent Workflow Builder API",

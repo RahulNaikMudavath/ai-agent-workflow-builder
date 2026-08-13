@@ -4,14 +4,15 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-  "start": "node src/server.js",
-  "dev": "nodemon src/server.js"
-},
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js"
+  },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@supabase/ssr": "^0.12.4",
     "@supabase/supabase-js": "^2.112.3",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
