@@ -8,6 +8,8 @@ function App() {
   const [steps, setSteps] = useState([]);
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState(false);
+  const [pausedRunId, setPausedRunId] = useState(null);
+  const [approving, setApproving] = useState(false);
 
   const addStep = (type) => {
     let config = {};
@@ -56,12 +58,12 @@ function App() {
       steps.map((step) =>
         step.id === id
           ? {
-              ...step,
-              config: {
-                ...step.config,
-                [field]: value,
-              },
-            }
+            ...step,
+            config: {
+              ...step.config,
+              [field]: value,
+            },
+          }
           : step
       )
     );
@@ -154,6 +156,9 @@ function App() {
 
       const result = await runResponse.json();
 
+      console.log("RUN WORKFLOW RESPONSE:", result);
+      console.log("RUN WORKFLOW STATUS:", result.status);
+
       if (!runResponse.ok) {
         const failedStep = result.executionLog?.find(
           (step) => step.status === "failed"
@@ -161,9 +166,8 @@ function App() {
 
         throw new Error(
           failedStep
-            ? `Step: ${failedStep.type}\nError: ${
-                failedStep.error || "Unknown error"
-              }`
+            ? `Step: ${failedStep.type}\nError: ${failedStep.error || "Unknown error"
+            }`
             : result.error || "Workflow execution failed"
         );
       }
@@ -172,16 +176,97 @@ function App() {
 
       if (result.status === "completed") {
         alert(
-          `Workflow completed successfully! 🎉\n\nSteps executed: ${result.executionLog.length}`
+          `Workflow completed successfully! 🎉\n\nSteps executed: ${
+            result.executionLog?.length || 0
+          }`
+        );
+      } else if (result.status === "paused") {
+        setPausedRunId(result.workflow_run_id);
+
+        alert(
+          `Workflow is waiting for approval. ⏸️\n\nSteps executed: ${
+            result.executionLog?.length || 0
+          }`
+        );
+      } else if (result.status === "failed") {
+        const failedStep = result.executionLog?.find(
+          (step) => step.status === "failed"
+        );
+
+        alert(
+          `Workflow failed!\n\nStep: ${
+            failedStep?.type || "Unknown"
+          }\nError: ${
+            failedStep?.error || result.error || "Unknown error"
+          }`
         );
       } else {
-        alert("Workflow failed!");
+        console.error("UNKNOWN WORKFLOW STATUS:", result);
+
+        alert(
+          `Unexpected workflow response.\n\nStatus: ${
+            result.status || "undefined"
+          }`
+        );
       }
     } catch (error) {
       console.error("Workflow execution error:", error);
       alert(error.message);
     } finally {
       setRunning(false);
+    }
+  };
+
+  const approveWorkflow = async () => {
+    if (!pausedRunId) {
+      return;
+    }
+
+    try {
+      setApproving(true);
+
+      const response = await fetch(
+        `${API_URL}/workflow-runs/${pausedRunId}/approve`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+        }
+      );
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          result.error || "Failed to approve workflow"
+        );
+      }
+
+      console.log("APPROVAL RESPONSE:", result);
+
+      if (result.status === "completed") {
+        setPausedRunId(null);
+
+        alert(
+          `Workflow completed successfully! 🎉\n\nSteps executed after approval: ${
+            result.executionLog?.length || 0
+          }`
+        );
+      } else if (result.status === "failed") {
+        setPausedRunId(null);
+
+        alert(
+          `Workflow failed!\n\nError: ${
+            result.error || "Unknown error"
+          }`
+        );
+      }
+    } catch (error) {
+      console.error("Approval error:", error);
+      alert(error.message);
+    } finally {
+      setApproving(false);
     }
   };
 
@@ -230,6 +315,16 @@ function App() {
           >
             {saving ? "Saving..." : "💾 Save Workflow"}
           </button>
+
+          {pausedRunId && (
+            <button
+              className="save-btn"
+              onClick={approveWorkflow}
+              disabled={approving}
+            >
+              {approving ? "Approving..." : "✅ Approve Workflow"}
+            </button>
+          )}
 
           <button
             className="run-btn"
