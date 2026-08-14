@@ -1,15 +1,214 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { createClient } from "graphql-ws";
+import { nhost } from "./nhost";
 
 const ORG_ID = "03538bbd-b9fe-44a4-88c8-cc68713ead78";
 const API_URL = "http://localhost:5001/api";
 
+const HASURA_WS_URL = import.meta.env.VITE_HASURA_WS_URL;
+
 function App() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [user, setUser] = useState(null);
+  const [loggingIn, setLoggingIn] = useState(false);
+
+  const getAuthHeaders = () => {
+    const session = nhost.getUserSession();
+
+    if (!session) {
+      throw new Error("Please sign in first");
+    }
+
+    return {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${session.accessToken}`,
+    };
+  };
+
   const [workflowName, setWorkflowName] = useState("");
   const [steps, setSteps] = useState([]);
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState(false);
   const [pausedRunId, setPausedRunId] = useState(null);
   const [approving, setApproving] = useState(false);
+  const [stepRuns, setStepRuns] = useState([]);
+  const [activeRunId, setActiveRunId] = useState(null);
+
+  const subscriptionRef = useRef(null);
+
+  const subscribeToStepRuns = (runId) => {
+    if (!runId) return;
+
+
+    if (subscriptionRef.current) {
+      subscriptionRef.current();
+      subscriptionRef.current = null;
+    }
+
+
+    setActiveRunId(runId);
+    setStepRuns([]);
+
+
+    const client = createClient({
+      url: HASURA_WS_URL,
+
+
+      connectionParams: () => {
+        const session = nhost.getUserSession();
+
+
+        console.log("WS SESSION:", !!session);
+        console.log("WS URL:", HASURA_WS_URL);
+
+
+        return {
+          headers: {
+            Authorization: session
+              ? `Bearer ${session.accessToken}`
+              : "",
+          },
+        };
+      },
+
+
+      on: {
+        opened: () => {
+          console.log("✅ WebSocket opened");
+        },
+
+
+        connected: () => {
+          console.log("✅ WebSocket connected");
+        },
+
+
+        closed: (event) => {
+          console.log("❌ WebSocket closed:", event);
+        },
+
+
+        error: (error) => {
+          console.error("❌ WebSocket error:", error);
+        },
+      },
+    });
+
+
+    const query = `
+      subscription StepRuns($runId: uuid!) {
+        step_runs(
+          where: {
+            workflow_run_id: {
+              _eq: $runId
+            }
+          }
+        ) {
+          id
+          workflow_run_id
+          workflow_step_id
+          status
+        }
+      }
+    `;
+
+
+    const subscription = client.subscribe(
+      {
+        query,
+        variables: {
+          runId,
+        },
+      },
+      {
+        next: (result) => {
+          console.log("🔥 STEP RUN UPDATE:", result);
+
+
+          const runs = result.data?.step_runs || [];
+
+
+          if (result.data?.step_runs) {
+            setStepRuns(runs);
+          }
+
+
+          const latestRun = runs[runs.length - 1];
+          const latestStep = latestRun ? steps.find((s) => s.id === latestRun.workflow_step_id) : null;
+          const isPaused = latestStep?.type === "approval_gate" && latestRun?.status === "completed";
+
+
+          if (isPaused) {
+            setPausedRunId(runId);
+          } else {
+            setPausedRunId(null);
+          }
+        },
+
+
+        error: (error) => {
+          console.error("❌ STEP RUN SUBSCRIPTION ERROR:", error);
+        },
+
+
+        complete: () => {
+          console.log("Step run subscription completed");
+        },
+      }
+    );
+
+
+    subscriptionRef.current = subscription;
+  };
+
+  useEffect(() => {
+    return () => {
+      if (subscriptionRef.current) {
+        subscriptionRef.current();
+      }
+    };
+  }, []);
+
+  const login = async () => {
+    if (!email.trim() || !password) {
+      alert("Enter email and password");
+      return;
+    }
+
+    try {
+      setLoggingIn(true);
+
+      const response = await nhost.auth.signInEmailPassword({
+        email,
+        password,
+      });
+
+      console.log("NHOST LOGIN RESPONSE:", response);
+
+      if (response.error) {
+        throw new Error(response.error.message);
+      }
+
+      const session =
+        response.body?.session ||
+        response.session ||
+        nhost.getUserSession();
+
+      if (!session) {
+        throw new Error("Login failed: no session returned");
+      }
+
+      console.log("LOGIN SUCCESS:", session);
+
+      setUser(session.user);
+    } catch (error) {
+      console.error("Login error:", error);
+      alert(error.message);
+    } finally {
+      setLoggingIn(false);
+    }
+  };
 
   const addStep = (type) => {
     let config = {};
@@ -84,9 +283,7 @@ function App() {
     try {
       const response = await fetch(`${API_URL}/workflows`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: getAuthHeaders(),
         body: JSON.stringify({
           name: workflowName,
           description: "Created from AI Agent Workflow Builder",
@@ -125,9 +322,7 @@ function App() {
 
       const saveResponse = await fetch(`${API_URL}/workflows`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: getAuthHeaders(),
         body: JSON.stringify({
           name: workflowName,
           description: "Created from AI Agent Workflow Builder",
@@ -146,73 +341,36 @@ function App() {
       }
 
       const runResponse = await fetch(
-        `${API_URL}/workflows/${workflow.id}/run`,
+        `${API_URL}/workflows/${workflow.id}/start`,
         {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
+          headers: getAuthHeaders(),
           body: JSON.stringify({
             input: "Please analyze this customer support request.",
           }),
         }
       );
 
-      const result = await runResponse.json();
+      const runData = await runResponse.json();
 
-      console.log("RUN WORKFLOW RESPONSE:", result);
-      console.log("RUN WORKFLOW STATUS:", result.status);
 
-      if (!runResponse.ok) {
-        const failedStep = result.executionLog?.find(
-          (step) => step.status === "failed"
-        );
-
-        throw new Error(
-          failedStep
-            ? `Step: ${failedStep.type}\nError: ${failedStep.error || "Unknown error"
-            }`
-            : result.error || "Workflow execution failed"
-        );
+      if (!runResponse.ok || !runData.success) {
+        throw new Error(runData.error || "Failed to start workflow");
       }
 
-      console.log("Workflow execution result:", result);
 
-      if (result.status === "completed") {
-        alert(
-          `Workflow completed successfully! 🎉\n\nSteps executed: ${
-            result.executionLog?.length || 0
-          }`
-        );
-      } else if (result.status === "paused") {
-        setPausedRunId(result.workflow_run_id);
+      const runId = runData.workflow_run_id;
 
-        alert(
-          `Workflow is waiting for approval. ⏸️\n\nSteps executed: ${
-            result.executionLog?.length || 0
-          }`
-        );
-      } else if (result.status === "failed") {
-        const failedStep = result.executionLog?.find(
-          (step) => step.status === "failed"
-        );
 
-        alert(
-          `Workflow failed!\n\nStep: ${
-            failedStep?.type || "Unknown"
-          }\nError: ${
-            failedStep?.error || result.error || "Unknown error"
-          }`
-        );
-      } else {
-        console.error("UNKNOWN WORKFLOW STATUS:", result);
+      console.log("Workflow started:", runId);
 
-        alert(
-          `Unexpected workflow response.\n\nStatus: ${
-            result.status || "undefined"
-          }`
-        );
+
+      if (runId) {
+        subscribeToStepRuns(runId);
       }
+
+
+      alert(`Workflow started successfully!\nRun ID: ${runId}`);
     } catch (error) {
       console.error("Workflow execution error:", error);
       alert(error.message);
@@ -233,9 +391,7 @@ function App() {
         `${API_URL}/workflow-runs/${pausedRunId}/approve`,
         {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
+          headers: getAuthHeaders(),
         }
       );
 
@@ -248,6 +404,10 @@ function App() {
       }
 
       console.log("APPROVAL RESPONSE:", result);
+
+      if (result.workflow_run_id) {
+        subscribeToStepRuns(result.workflow_run_id);
+      }
 
       if (result.status === "completed") {
         setPausedRunId(null);
@@ -307,6 +467,35 @@ function App() {
 
     return "";
   };
+
+  if (!user) {
+    return (
+      <div className="app">
+        <div className="login-box">
+          <h1>AI Agent Workflow Builder</h1>
+          <p>Sign in to continue</p>
+
+          <input
+            type="email"
+            placeholder="Email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+          />
+
+          <input
+            type="password"
+            placeholder="Password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+
+          <button onClick={login} disabled={loggingIn}>
+            {loggingIn ? "Signing in..." : "Sign In"}
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="app">
@@ -396,101 +585,113 @@ function App() {
               </div>
             ) : (
               <div className="steps">
-                {steps.map((step, index) => (
-                  <div className="step" key={step.id}>
-                    <div className="step-number">{index + 1}</div>
+                {steps.map((step, index) => {
+                  const stepRun = stepRuns.find(
+                    (run) => run.workflow_step_id === step.id
+                  );
 
-                    <div className="step-content">
-                      <strong>{getStepTitle(step.type)}</strong>
+                  const stepStatus = stepRun?.status || "pending";
 
-                      <span>{getStepDescription(step.type)}</span>
+                  return (
+                    <div className="step" key={step.id}>
+                      <div className="step-number">{index + 1}</div>
 
-                      {step.type === "llm_call" && (
-                        <textarea
-                          value={step.config.prompt || ""}
-                          placeholder="Enter LLM prompt"
-                          onChange={(e) =>
-                            updateStepConfig(
-                              step.id,
-                              "prompt",
-                              e.target.value
-                            )
-                          }
-                        />
-                      )}
+                      <div className="step-content">
+                        <strong>{getStepTitle(step.type)}</strong>
 
-                      {step.type === "http_request" && (
-                        <>
-                          <input
-                            type="text"
-                            value={step.config.url || ""}
-                            placeholder="HTTP URL"
+                        <span>{getStepDescription(step.type)}</span>
+
+                        <div className="step-status">
+                          Status: {stepStatus}
+                        </div>
+
+                        {step.type === "llm_call" && (
+                          <textarea
+                            value={step.config.prompt || ""}
+                            placeholder="Enter LLM prompt"
                             onChange={(e) =>
                               updateStepConfig(
                                 step.id,
-                                "url",
+                                "prompt",
                                 e.target.value
                               )
                             }
                           />
+                        )}
 
-                          <select
-                            value={step.config.method || "GET"}
+                        {step.type === "http_request" && (
+                          <>
+                            <input
+                              type="text"
+                              value={step.config.url || ""}
+                              placeholder="HTTP URL"
+                              onChange={(e) =>
+                                updateStepConfig(
+                                  step.id,
+                                  "url",
+                                  e.target.value
+                                )
+                              }
+                            />
+
+                            <select
+                              value={step.config.method || "GET"}
+                              onChange={(e) =>
+                                updateStepConfig(
+                                  step.id,
+                                  "method",
+                                  e.target.value
+                                )
+                              }
+                            >
+                              <option value="GET">GET</option>
+                              <option value="POST">POST</option>
+                              <option value="PUT">PUT</option>
+                              <option value="DELETE">DELETE</option>
+                            </select>
+                          </>
+                        )}
+
+                        {step.type === "conditional_branch" && (
+                          <input
+                            type="text"
+                            value={step.config.condition || ""}
+                            placeholder="Enter condition"
                             onChange={(e) =>
                               updateStepConfig(
                                 step.id,
-                                "method",
+                                "condition",
                                 e.target.value
                               )
                             }
-                          >
-                            <option value="GET">GET</option>
-                            <option value="POST">POST</option>
-                            <option value="PUT">PUT</option>
-                            <option value="DELETE">DELETE</option>
-                          </select>
-                        </>
-                      )}
+                          />
+                        )}
 
-                      {step.type === "conditional_branch" && (
-                        <input
-                          type="text"
-                          value={step.config.condition || ""}
-                          placeholder="Enter condition"
-                          onChange={(e) =>
-                            updateStepConfig(
-                              step.id,
-                              "condition",
-                              e.target.value
-                            )
-                          }
-                        />
-                      )}
+                        {step.type === "approval_gate" && (
+                          <input
+                            type="text"
+                            value={step.config.message || ""}
+                            placeholder="Approval message"
+                            onChange={(e) =>
+                              updateStepConfig(
+                                step.id,
+                                "message",
+                                e.target.value
+                              )
+                            }
+                          />
+                        )}
+                      </div>
 
-                      {step.type === "approval_gate" && (
-                        <input
-                          type="text"
-                          value={step.config.message || ""}
-                          placeholder="Approval message"
-                          onChange={(e) =>
-                            updateStepConfig(
-                              step.id,
-                              "message",
-                              e.target.value
-                            )
-                          }
-                        />
-                      )}
+                      <button
+                        className="delete-btn"
+                        onClick={() => removeStep(step.id)}
+                      >
+                        ×
+                      </button>
                     </div>
-
-                    <button
-                      className="delete-btn"
-                      onClick={() => removeStep(step.id)}
-                    >
-                      ×
-                    </button>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </section>

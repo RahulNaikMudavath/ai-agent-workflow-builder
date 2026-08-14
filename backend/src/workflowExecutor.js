@@ -43,7 +43,24 @@ async function executeWorkflow(workflow, options = {}) {
       continue;
     }
 
+    const stepInput =
+      currentData.output !== null &&
+      currentData.output !== undefined
+        ? currentData.output
+        : currentData.input;
+
     const startedAt = new Date().toISOString();
+
+    // ========================================
+    // STEP START CALLBACK
+    // ========================================
+
+    if (options.onStepStart) {
+      await options.onStepStart({
+        step,
+        input: stepInput,
+      });
+    }
 
     try {
       let result;
@@ -84,15 +101,9 @@ async function executeWorkflow(workflow, options = {}) {
           throw new Error(`Unsupported step type: ${step.type}`);
       }
 
-      const stepInput =
-        currentData.output !== null &&
-        currentData.output !== undefined
-          ? currentData.output
-          : currentData.input;
-
       currentData.output = result;
 
-      executionLog.push({
+      const log = {
         step_id: step.id,
         position: step.position,
         type: step.type,
@@ -101,9 +112,33 @@ async function executeWorkflow(workflow, options = {}) {
         result,
         started_at: startedAt,
         completed_at: new Date().toISOString(),
-      });
+      };
 
-      if (result && result.status === "waiting_for_approval") {
+      executionLog.push(log);
+
+      // ========================================
+      // STEP COMPLETE CALLBACK
+      // ========================================
+
+      if (options.onStepComplete) {
+        await options.onStepComplete({
+          step,
+          input: stepInput,
+          result,
+          status: log.status,
+          startedAt,
+          completedAt: log.completed_at,
+        });
+      }
+
+      // ========================================
+      // APPROVAL PAUSE
+      // ========================================
+
+      if (
+        result &&
+        result.status === "waiting_for_approval"
+      ) {
         return {
           status: "waiting_for_approval",
           output: currentData.output,
@@ -111,15 +146,34 @@ async function executeWorkflow(workflow, options = {}) {
         };
       }
     } catch (error) {
-      executionLog.push({
+      const log = {
         step_id: step.id,
         position: step.position,
         type: step.type,
         status: "failed",
+        input: stepInput,
         error: error.message,
         started_at: startedAt,
         completed_at: new Date().toISOString(),
-      });
+      };
+
+      executionLog.push(log);
+
+      // ========================================
+      // STEP FAILED CALLBACK
+      // ========================================
+
+      if (options.onStepComplete) {
+        await options.onStepComplete({
+          step,
+          input: stepInput,
+          result: null,
+          status: "failed",
+          error: error.message,
+          startedAt,
+          completedAt: log.completed_at,
+        });
+      }
 
       return {
         status: "failed",

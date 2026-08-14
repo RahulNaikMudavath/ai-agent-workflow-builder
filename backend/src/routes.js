@@ -1,8 +1,130 @@
 const express = require("express");
 const { graphqlRequest } = require("./supabase");
 const { executeWorkflow } = require("./workflowExecutor");
+const { requireAuth } = require("./authMiddleware");
 
 const router = express.Router();
+
+
+// ========================================
+// AUTH / ORGANIZATION SECURITY HELPERS
+// ========================================
+
+
+function getHasuraUserId(req) {
+  return (
+    req.user?.id ||
+    req.headers["x-hasura-user-id"] ||
+    req.headers["X-Hasura-User-Id"]
+  );
+}
+
+
+async function getOrgMember(orgId, userId) {
+  if (!orgId || !userId) {
+    return null;
+  }
+
+
+  const query = `
+    query GetOrgMember(
+      $org_id: uuid!
+      $user_id: uuid!
+    ) {
+      org_members(
+        where: {
+          org_id: { _eq: $org_id }
+          user_id: { _eq: $user_id }
+        }
+        limit: 1
+      ) {
+        id
+        org_id
+        user_id
+        role
+      }
+    }
+  `;
+
+
+  const data = await graphqlRequest(query, {
+    org_id: orgId,
+    user_id: userId,
+  });
+
+
+  return data.org_members?.[0] || null;
+}
+
+
+function canTriggerWorkflow(role) {
+  return role === "owner" || role === "editor";
+}
+
+
+function canManageWorkflow(role) {
+  return role === "owner" || role === "editor";
+}
+
+
+function isOwner(role) {
+  return role === "owner";
+}
+
+
+async function requireWorkflowAccess(req, workflow, options = {}) {
+  const userId = getHasuraUserId(req);
+
+
+  if (!userId) {
+    const error = new Error("Authentication required");
+    error.statusCode = 401;
+    throw error;
+  }
+
+
+  const member = await getOrgMember(workflow.org_id, userId);
+
+
+  if (!member) {
+    const error = new Error(
+      "You are not a member of this organization"
+    );
+    error.statusCode = 403;
+    throw error;
+  }
+
+
+  const requiredRole = options.requiredRole;
+
+
+  if (requiredRole === "owner" && member.role !== "owner") {
+    const error = new Error(
+      "Owner permission required"
+    );
+    error.statusCode = 403;
+    throw error;
+  }
+
+
+  if (
+    requiredRole === "owner_or_editor" &&
+    !["owner", "editor"].includes(member.role)
+  ) {
+    const error = new Error(
+      "Owner or editor permission required"
+    );
+    error.statusCode = 403;
+    throw error;
+  }
+
+
+  return {
+    userId,
+    member,
+  };
+}
+
 
 // Health check
 router.get("/health", (req, res) => {
@@ -190,6 +312,316 @@ router.post("/workflows", async (req, res) => {
   }
 });
 
+// Creates the run first so the frontend can subscribe immediately
+router.post("/workflows/:id/start", requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const query = `
+      query GetWorkflow($id: uuid!) {
+        workflows_by_pk(id: $id) {
+          id
+          name
+          description
+          org_id
+          created_at
+
+          workflow_steps(order_by: { position: asc }) {
+            id
+            workflow_id
+            position
+            type
+            config
+          }
+        }
+      }
+    `;
+
+    const data = await graphqlRequest(query, { id });
+
+    if (!data.workflows_by_pk) {
+      return res.status(404).json({
+        error: "Workflow not found",
+      });
+    }
+
+    const workflow = data.workflows_by_pk;
+    const steps = workflow.workflow_steps;
+
+    // ========================================
+    // ORGANIZATION + ROLE CHECK
+    // ========================================
+    const { userId, member } = await requireWorkflowAccess(
+      req,
+      workflow,
+      {
+        requiredRole: "owner_or_editor",
+      }
+    );
+
+    console.log(
+      `Workflow ${workflow.id} start triggered by ${userId} (${member.role})`
+    );
+
+    // ========================================
+    // QUOTA CHECK
+    // ========================================
+    const quotaQuery = `
+      query GetOrganizationQuota($id: uuid!) {
+        organizations_by_pk(id: $id) {
+          id
+          calls_used
+          calls_allowed
+          quota_period_start
+        }
+      }
+    `;
+
+    const quotaData = await graphqlRequest(quotaQuery, {
+      id: workflow.org_id,
+    });
+
+    const organization = quotaData.organizations_by_pk;
+
+    if (!organization) {
+      return res.status(404).json({
+        error: "Organization not found",
+      });
+    }
+
+    if (
+      organization.calls_used >=
+      organization.calls_allowed
+    ) {
+      return res.status(429).json({
+        error: "Organization usage quota exhausted",
+      });
+    }
+
+    // Create workflow run in database first
+    const createRunMutation = `
+      mutation CreateWorkflowRun(
+        $workflow_id: uuid!
+        $status: String!
+      ) {
+        insert_workflow_runs_one(
+          object: {
+            workflow_id: $workflow_id
+            status: $status
+          }
+        ) {
+          id
+        }
+      }
+    `;
+
+    const runData = await graphqlRequest(createRunMutation, {
+      workflow_id: id,
+      status: "running",
+    });
+
+    const workflowRun = runData.insert_workflow_runs_one;
+
+    // Return the response immediately so frontend can subscribe
+    res.status(201).json({
+      success: true,
+      workflow_id: id,
+      workflow_run_id: workflowRun.id,
+      status: "running",
+    });
+
+    // Run execution in the background
+    setImmediate(async () => {
+      try {
+        const result = await executeWorkflow(
+          {
+            ...workflow,
+            steps,
+            input: req.body?.input || null,
+          },
+          {
+            workflowRunId: workflowRun.id,
+            onStepStart: async ({ step, input }) => {
+              const mutation = `
+                mutation CreateRunningStepRun(
+                  $workflow_run_id: uuid!
+                  $workflow_step_id: uuid!
+                  $status: String!
+                  $input: jsonb
+                  $attempt_count: Int!
+                ) {
+                  insert_step_runs_one(
+                    object: {
+                      workflow_run_id: $workflow_run_id
+                      workflow_step_id: $workflow_step_id
+                      status: $status
+                      input: $input
+                      attempt_count: $attempt_count
+                    }
+                  ) {
+                    id
+                  }
+                }
+              `;
+
+              await graphqlRequest(mutation, {
+                workflow_run_id: workflowRun.id,
+                workflow_step_id: step.id,
+                status: "running",
+                input: input ?? null,
+                attempt_count: 1,
+              });
+            },
+            onStepComplete: async ({
+              step,
+              result,
+              status,
+              error,
+            }) => {
+              const mutation = `
+                mutation UpdateStepRun(
+                  $workflow_run_id: uuid!
+                  $workflow_step_id: uuid!
+                  $status: String!
+                  $output: jsonb
+                  $error: String
+                ) {
+                  update_step_runs(
+                    where: {
+                      workflow_run_id: { _eq: $workflow_run_id }
+                      workflow_step_id: { _eq: $workflow_step_id }
+                      status: { _eq: "running" }
+                    }
+                    _set: {
+                      status: $status
+                      output: $output
+                      error: $error
+                    }
+                  ) {
+                    affected_rows
+                  }
+                }
+              `;
+
+              await graphqlRequest(mutation, {
+                workflow_run_id: workflowRun.id,
+                workflow_step_id: step.id,
+                status,
+                output: result ?? null,
+                error: error || null,
+              });
+            },
+          }
+        );
+
+        // Update final workflow run status
+        const finalStatus =
+          result.status === "waiting_for_approval"
+            ? "paused"
+            : result.status;
+
+        const updateRunMutation = `
+          mutation UpdateWorkflowRun(
+            $id: uuid!
+            $status: String!
+            $completed_at: timestamptz
+          ) {
+            update_workflow_runs_by_pk(
+              pk_columns: { id: $id }
+              _set: {
+                status: $status
+                completed_at: $completed_at
+              }
+            ) {
+              id
+              workflow_id
+              status
+              started_at
+              completed_at
+            }
+          }
+        `;
+
+        await graphqlRequest(updateRunMutation, {
+          id: workflowRun.id,
+          status: finalStatus,
+          completed_at:
+            finalStatus === "running"
+              ? null
+              : new Date().toISOString(),
+        });
+
+        // Increment quota only when completed
+        if (result.status === "completed") {
+          const incrementQuotaMutation = `
+            mutation IncrementQuota($id: uuid!) {
+              update_organizations_by_pk(
+                pk_columns: { id: $id }
+                _inc: {
+                  calls_used: 1
+                }
+              ) {
+                id
+                calls_used
+                calls_allowed
+              }
+            }
+          `;
+
+          await graphqlRequest(incrementQuotaMutation, {
+            id: workflow.org_id,
+          });
+        }
+
+        console.log(
+          `Workflow run ${workflowRun.id} finished with status: ${finalStatus}`
+        );
+      } catch (error) {
+        console.error(
+          `Background workflow execution failed for ${workflowRun.id}:`,
+          error
+        );
+
+        // Make sure the run is marked failed
+        const updateFailedRunMutation = `
+          mutation UpdateFailedWorkflowRun(
+            $id: uuid!
+            $status: String!
+            $completed_at: timestamptz
+          ) {
+            update_workflow_runs_by_pk(
+              pk_columns: { id: $id }
+              _set: {
+                status: $status
+                completed_at: $completed_at
+              }
+            ) {
+              id
+              status
+              completed_at
+            }
+          }
+        `;
+
+        await graphqlRequest(updateFailedRunMutation, {
+          id: workflowRun.id,
+          status: "failed",
+          completed_at: new Date().toISOString(),
+        });
+      }
+    });
+  } catch (error) {
+    console.error("Start workflow error:", error);
+
+    const statusCode = error.statusCode || 500;
+
+    res.status(statusCode).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
 // Run workflow
 router.post("/workflows/:id/run", async (req, res) => {
   try {
@@ -226,6 +658,65 @@ router.post("/workflows/:id/run", async (req, res) => {
     const workflow = data.workflows_by_pk;
     const steps = workflow.workflow_steps;
 
+    // ========================================
+    // ORGANIZATION + ROLE CHECK
+    // ========================================
+
+
+    const { userId, member } = await requireWorkflowAccess(
+      req,
+      workflow,
+      {
+        requiredRole: "owner_or_editor",
+      }
+    );
+
+
+    console.log(
+      `Workflow ${workflow.id} triggered by ${userId} (${member.role})`
+    );
+
+    // ========================================
+    // QUOTA CHECK
+    // ========================================
+
+
+    const quotaQuery = `
+      query GetOrganizationQuota($id: uuid!) {
+        organizations_by_pk(id: $id) {
+          id
+          calls_used
+          calls_allowed
+          quota_period_start
+        }
+      }
+    `;
+
+
+    const quotaData = await graphqlRequest(quotaQuery, {
+      id: workflow.org_id,
+    });
+
+
+    const organization = quotaData.organizations_by_pk;
+
+
+    if (!organization) {
+      return res.status(404).json({
+        error: "Organization not found",
+      });
+    }
+
+
+    if (
+      organization.calls_used >=
+      organization.calls_allowed
+    ) {
+      return res.status(429).json({
+        error: "Organization usage quota exhausted",
+      });
+    }
+
     // Create workflow run in database
     const createRunMutation = `
       mutation CreateWorkflowRun(
@@ -257,50 +748,98 @@ router.post("/workflows/:id/run", async (req, res) => {
       },
       {
         workflowRunId: workflowRun.id,
+        onStepStart: async ({ step, input }) => {
+          const mutation = `
+            mutation CreateRunningStepRun(
+              $workflow_run_id: uuid!
+              $workflow_step_id: uuid!
+              $status: String!
+              $input: jsonb
+              $attempt_count: Int!
+            ) {
+              insert_step_runs_one(
+                object: {
+                  workflow_run_id: $workflow_run_id
+                  workflow_step_id: $workflow_step_id
+                  status: $status
+                  input: $input
+                  attempt_count: $attempt_count
+                }
+              ) {
+                id
+                workflow_run_id
+                workflow_step_id
+                status
+                input
+                attempt_count
+              }
+            }
+          `;
+
+          await graphqlRequest(mutation, {
+            workflow_run_id: workflowRun.id,
+            workflow_step_id: step.id,
+            status: "running",
+            input: input ?? null,
+            attempt_count: 1,
+          });
+        },
+
+        // ========================================
+        // STEP COMPLETE
+        // ========================================
+
+        onStepComplete: async ({
+          step,
+          result,
+          status,
+          error,
+          completedAt,
+        }) => {
+          const mutation = `
+            mutation UpdateStepRun(
+              $workflow_run_id: uuid!
+              $workflow_step_id: uuid!
+              $status: String!
+              $output: jsonb
+              $error: String
+            ) {
+              update_step_runs(
+                where: {
+                  workflow_run_id: { _eq: $workflow_run_id }
+                  workflow_step_id: { _eq: $workflow_step_id }
+                  status: { _eq: "running" }
+                }
+                _set: {
+                  status: $status
+                  output: $output
+                  error: $error
+                }
+              ) {
+                returning {
+                  id
+                  workflow_run_id
+                  workflow_step_id
+                  status
+                  input
+                  output
+                  error
+                  attempt_count
+                }
+              }
+            }
+          `;
+
+          await graphqlRequest(mutation, {
+            workflow_run_id: workflowRun.id,
+            workflow_step_id: step.id,
+            status,
+            output: result ?? null,
+            error: error || null,
+          });
+        },
       }
     );
-
-    // ---------------------------------
-    // Save step runs
-    // ---------------------------------
-    if (result.executionLog && result.executionLog.length > 0) {
-      const stepRunObjects = result.executionLog.map((log) => ({
-        workflow_run_id: workflowRun.id,
-        workflow_step_id: log.step_id,
-        status: log.status,
-        input: log.input || null,
-        output: log.result || null,
-        error: log.error || null,
-        attempt_count: 1,
-      }));
-
-
-      const stepRunsMutation = `
-        mutation CreateStepRuns(
-          $objects: [step_runs_insert_input!]!
-        ) {
-          insert_step_runs(
-            objects: $objects
-          ) {
-            returning {
-              id
-              workflow_run_id
-              workflow_step_id
-              status
-              input
-              output
-              error
-              attempt_count
-            }
-          }
-        }
-      `;
-
-
-      await graphqlRequest(stepRunsMutation, {
-        objects: stepRunObjects,
-      });
-    }
 
 
     // ---------------------------------
@@ -347,9 +886,32 @@ router.post("/workflows/:id/run", async (req, res) => {
     });
 
 
-    // ---------------------------------
-    // Return execution result
-    // ---------------------------------
+    // ========================================
+    // INCREMENT ORGANIZATION USAGE
+    // ========================================
+
+
+    if (result.status === "completed") {
+      const incrementQuotaMutation = `
+        mutation IncrementQuota($id: uuid!) {
+          update_organizations_by_pk(
+            pk_columns: { id: $id }
+            _inc: {
+              calls_used: 1
+            }
+          ) {
+            id
+            calls_used
+            calls_allowed
+          }
+        }
+      `;
+
+
+      await graphqlRequest(incrementQuotaMutation, {
+        id: workflow.org_id,
+      });
+    }
 
 
     res.json({
@@ -414,6 +976,24 @@ router.post("/workflow-runs/:runId/approve", async (req, res) => {
     const workflowData = await graphqlRequest(workflowQuery, { id: workflowId });
     const workflow = workflowData.workflows_by_pk;
     const steps = workflow.workflow_steps;
+
+    // ========================================
+    // APPROVER SECURITY CHECK
+    // ========================================
+
+
+    const { userId, member } = await requireWorkflowAccess(
+      req,
+      workflow,
+      {
+        requiredRole: "owner_or_editor",
+      }
+    );
+
+
+    console.log(
+      `Approval requested by ${userId} (${member.role})`
+    );
 
     // Fetch existing step runs to determine start position and last output
     const stepRunsQuery = `
@@ -484,47 +1064,98 @@ router.post("/workflow-runs/:runId/approve", async (req, res) => {
         initialInput,
         initialOutput,
         workflowRunId: runId,
+        onStepStart: async ({ step, input }) => {
+          const mutation = `
+            mutation CreateRunningStepRun(
+              $workflow_run_id: uuid!
+              $workflow_step_id: uuid!
+              $status: String!
+              $input: jsonb
+              $attempt_count: Int!
+            ) {
+              insert_step_runs_one(
+                object: {
+                  workflow_run_id: $workflow_run_id
+                  workflow_step_id: $workflow_step_id
+                  status: $status
+                  input: $input
+                  attempt_count: $attempt_count
+                }
+              ) {
+                id
+                workflow_run_id
+                workflow_step_id
+                status
+                input
+                attempt_count
+              }
+            }
+          `;
+
+          await graphqlRequest(mutation, {
+            workflow_run_id: runId,
+            workflow_step_id: step.id,
+            status: "running",
+            input: input ?? null,
+            attempt_count: 1,
+          });
+        },
+
+        // ========================================
+        // STEP COMPLETE
+        // ========================================
+
+        onStepComplete: async ({
+          step,
+          result,
+          status,
+          error,
+          completedAt,
+        }) => {
+          const mutation = `
+            mutation UpdateStepRun(
+              $workflow_run_id: uuid!
+              $workflow_step_id: uuid!
+              $status: String!
+              $output: jsonb
+              $error: String
+            ) {
+              update_step_runs(
+                where: {
+                  workflow_run_id: { _eq: $workflow_run_id }
+                  workflow_step_id: { _eq: $workflow_step_id }
+                  status: { _eq: "running" }
+                }
+                _set: {
+                  status: $status
+                  output: $output
+                  error: $error
+                }
+              ) {
+                returning {
+                  id
+                  workflow_run_id
+                  workflow_step_id
+                  status
+                  input
+                  output
+                  error
+                  attempt_count
+                }
+              }
+            }
+          `;
+
+          await graphqlRequest(mutation, {
+            workflow_run_id: runId,
+            workflow_step_id: step.id,
+            status,
+            output: result ?? null,
+            error: error || null,
+          });
+        },
       }
     );
-
-    // Save step runs
-    if (result.executionLog && result.executionLog.length > 0) {
-      const stepRunObjects = result.executionLog.map((log) => ({
-        workflow_run_id: runId,
-        workflow_step_id: log.step_id,
-        status: log.status,
-        input: log.input || null,
-        output: log.result || null,
-        error: log.error || null,
-        attempt_count: 1,
-      }));
-
-      const stepRunsMutation = `
-        mutation CreateStepRuns(
-          $objects: [step_runs_insert_input!]!
-        ) {
-          insert_step_runs(
-            objects: $objects
-          ) {
-            returning {
-              id
-              workflow_run_id
-              workflow_step_id
-              status
-              input
-              output
-              error
-              attempt_count
-            }
-          }
-        }
-      `;
-
-
-      await graphqlRequest(stepRunsMutation, {
-        objects: stepRunObjects,
-      });
-    }
 
 
     // Update final workflow status
@@ -564,6 +1195,34 @@ router.post("/workflow-runs/:runId/approve", async (req, res) => {
     });
 
 
+    // ========================================
+    // INCREMENT ORGANIZATION USAGE
+    // ========================================
+
+
+    if (result.status === "completed") {
+      const incrementQuotaMutation = `
+        mutation IncrementQuota($id: uuid!) {
+          update_organizations_by_pk(
+            pk_columns: { id: $id }
+            _inc: {
+              calls_used: 1
+            }
+          ) {
+            id
+            calls_used
+            calls_allowed
+          }
+        }
+      `;
+
+
+      await graphqlRequest(incrementQuotaMutation, {
+        id: workflow.org_id,
+      });
+    }
+
+
     res.json({
       success: true,
       workflow_run_id: runId,
@@ -575,6 +1234,74 @@ router.post("/workflow-runs/:runId/approve", async (req, res) => {
     });
   } catch (error) {
     console.error("Approval error:", error);
+
+
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+
+// ========================================
+// GET STEP RUNS FOR A WORKFLOW RUN
+// ========================================
+
+
+router.get("/workflow-runs/:runId/steps", requireAuth, async (req, res) => {
+  try {
+    const { runId } = req.params;
+
+
+    const query = `
+      query GetWorkflowRunWithSteps($runId: uuid!) {
+        workflow_runs_by_pk(id: $runId) {
+          id
+          workflow_id
+          status
+          started_at
+          completed_at
+
+
+          step_runs(
+            order_by: { created_at: asc }
+          ) {
+            id
+            workflow_run_id
+            workflow_step_id
+            status
+            input
+            output
+            error
+            attempt_count
+            created_at
+          }
+        }
+      }
+    `;
+
+
+    const data = await graphqlRequest(query, {
+      runId,
+    });
+
+
+    if (!data.workflow_runs_by_pk) {
+      return res.status(404).json({
+        error: "Workflow run not found",
+      });
+    }
+
+
+    res.json({
+      success: true,
+      workflow_run_id: data.workflow_runs_by_pk.id,
+      status: data.workflow_runs_by_pk.status,
+      stepRuns: data.workflow_runs_by_pk.step_runs || [],
+    });
+  } catch (error) {
+    console.error("Get step runs error:", error);
 
 
     res.status(500).json({
