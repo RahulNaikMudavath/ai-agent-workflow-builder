@@ -9,14 +9,125 @@ function App() {
   const [workflowName, setWorkflowName] = useState("");
   const [steps, setSteps] = useState([]);
   const [saving, setSaving] = useState(false);
+  const [running, setRunning] = useState(false);
+
+  const runWorkflow = async () => {
+  if (!workflowName.trim()) {
+    alert("Please enter a workflow name");
+    return;
+  }
+
+  try {
+    setRunning(true);
+
+    // Save the workflow first
+    const saveResponse = await fetch(
+      "http://localhost:5001/api/workflows",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          name: workflowName,
+          description: "Created from AI Agent Workflow Builder",
+          org_id: "03538bbd-b9fe-44a4-88c8-cc68713ead78",
+          steps: steps.map((step) => ({
+            type: step.type,
+            config: step.config,
+          })),
+        }),
+      }
+    );
+
+    const workflow = await saveResponse.json();
+
+    if (!saveResponse.ok) {
+      throw new Error(workflow.error || "Failed to save workflow");
+    }
+
+    // Execute the newly created workflow
+    const runResponse = await fetch(
+      `http://localhost:5001/api/workflows/${workflow.id}/run`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          input: "Please analyze this customer support request.",
+        }),
+      }
+    );
+
+    const result = await runResponse.json();
+
+    if (!runResponse.ok) {
+      throw new Error(result.error || "Workflow execution failed");
+    }
+
+    console.log("Workflow execution result:", result);
+
+    if (result.status === "completed") {
+      alert(
+        `Workflow completed successfully! 🎉\n\nSteps executed: ${result.executionLog.length}`
+      );
+    } else {
+      const failedStep = result.executionLog?.find(
+        (step) => step.status === "failed"
+      );
+
+      alert(
+        `Workflow failed!\n\nStep: ${
+          failedStep?.type || "Unknown"
+        }\nError: ${
+          failedStep?.error || result.error || "Unknown error"
+        }`
+      );
+    }
+  } catch (error) {
+    console.error("Workflow execution error:", error);
+    alert(error.message);
+  } finally {
+    setRunning(false);
+  }
+};
 
   const addStep = (type) => {
+    let config = {};
+
+    if (type === "llm_call") {
+      config = {
+        prompt: "Analyze the user request and provide a helpful response.",
+      };
+    }
+
+    if (type === "http_request") {
+      config = {
+        url: "https://jsonplaceholder.typicode.com/todos/1",
+        method: "GET",
+      };
+    }
+    
+
+    if (type === "conditional_branch") {
+      config = {
+        condition: "response is not empty",
+      };
+    }
+
+    if (type === "approval_gate") {
+      config = {
+        message: "Please approve this workflow before continuing.",
+      };
+    }
+
     setSteps([
       ...steps,
       {
         id: Date.now(),
         type,
-        config: {},
+        config,
       },
     ]);
   };
@@ -80,9 +191,13 @@ function App() {
             💾 Save Workflow
           </button>
 
-          <button className="run-btn">
-            ▶ Run Workflow
-          </button>
+          <button
+  className="run-btn"
+  onClick={runWorkflow}
+  disabled={running}
+>
+  {running ? "Running..." : "▶ Run Workflow"}
+</button>
         </div>
       </header>
 
