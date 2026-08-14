@@ -249,11 +249,16 @@ router.post("/workflows/:id/run", async (req, res) => {
     });
     const workflowRun = runData.insert_workflow_runs_one;
 
-    const result = await executeWorkflow({
-      ...workflow,
-      steps,
-      input: req.body?.input || null,
-    });
+    const result = await executeWorkflow(
+      {
+        ...workflow,
+        steps,
+        input: req.body?.input || null,
+      },
+      {
+        workflowRunId: workflowRun.id,
+      }
+    );
 
     // ---------------------------------
     // Save step runs
@@ -478,6 +483,7 @@ router.post("/workflow-runs/:runId/approve", async (req, res) => {
         startPosition,
         initialInput,
         initialOutput,
+        workflowRunId: runId,
       }
     );
 

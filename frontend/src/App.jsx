@@ -39,6 +39,10 @@ function App() {
       };
     }
 
+    if (type === "db_write") {
+      config = {};
+    }
+
     setSteps([
       ...steps,
       {
@@ -275,6 +279,7 @@ function App() {
     if (type === "http_request") return "HTTP Request";
     if (type === "conditional_branch") return "Conditional Branch";
     if (type === "approval_gate") return "Approval Gate";
+    if (type === "db_write") return "DB Write";
 
     return type;
   };
@@ -294,6 +299,10 @@ function App() {
 
     if (type === "approval_gate") {
       return "Pause workflow until approval";
+    }
+
+    if (type === "db_write") {
+      return "Save workflow data to the database";
     }
 
     return "";
@@ -367,6 +376,10 @@ function App() {
 
             <button onClick={() => addStep("approval_gate")}>
               👤 Approval Gate
+            </button>
+
+            <button onClick={() => addStep("db_write")}>
+              💾 DB Write
             </button>
           </aside>
 

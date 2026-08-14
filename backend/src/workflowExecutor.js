@@ -1,3 +1,23 @@
+const { graphqlRequest } = require("./supabase");
+
+async function executeWithRetry(fn, retries = 1) {
+  let lastError;
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+
+      if (attempt < retries) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+  }
+
+  throw lastError;
+}
+
 async function executeWorkflow(workflow, options = {}) {
   if (!workflow || !workflow.steps) {
     throw new Error("Invalid workflow");
@@ -30,11 +50,26 @@ async function executeWorkflow(workflow, options = {}) {
 
       switch (step.type) {
         case "llm_call":
-          result = await executeLLMCall(step, currentData);
+          result = await executeWithRetry(
+            () => executeLLMCall(step, currentData),
+            1
+          );
           break;
 
         case "http_request":
-          result = await executeHTTPRequest(step, currentData);
+          result = await executeWithRetry(
+            () => executeHTTPRequest(step, currentData),
+            1
+          );
+          break;
+
+        case "db_write":
+          result = await executeDBWrite(
+            step,
+            currentData,
+            workflow.id,
+            options.workflowRunId
+          );
           break;
 
         case "conditional_branch":
@@ -256,6 +291,67 @@ function executeApprovalGate(step, currentData) {
     approved: false,
     data: currentData.output,
   };
+}
+
+
+// ===============================
+// DB WRITE
+// ===============================
+
+
+async function executeDBWrite(
+  step,
+  currentData,
+  workflowId,
+  workflowRunId
+) {
+  if (!workflowId) {
+    throw new Error("DB Write requires workflow ID");
+  }
+
+  if (!workflowRunId) {
+    throw new Error("DB Write requires workflow run ID");
+  }
+
+  const dataToSave =
+    currentData.output !== null &&
+    currentData.output !== undefined
+      ? currentData.output
+      : currentData.input;
+
+  const mutation = `
+    mutation CreateWorkflowData(
+      $workflow_id: uuid!
+      $workflow_run_id: uuid!
+      $data: jsonb!
+    ) {
+      insert_workflow_data_one(
+        object: {
+          workflow_id: $workflow_id
+          workflow_run_id: $workflow_run_id
+          data: $data
+        }
+      ) {
+        id
+        workflow_id
+        workflow_run_id
+        data
+        created_at
+      }
+    }
+  `;
+
+  const result = await graphqlRequest(mutation, {
+    workflow_id: workflowId,
+    workflow_run_id: workflowRunId,
+    data: dataToSave,
+  });
+
+  if (!result.insert_workflow_data_one) {
+    throw new Error("Failed to save workflow data");
+  }
+
+  return result.insert_workflow_data_one;
 }
 
 
