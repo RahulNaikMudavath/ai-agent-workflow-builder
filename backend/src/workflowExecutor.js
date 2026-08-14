@@ -100,14 +100,18 @@ async function executeWorkflow(workflow, options = {}) {
         default:
           throw new Error(`Unsupported step type: ${step.type}`);
       }
+      
 
       currentData.output = result;
+
+      const isWaitingForApproval =
+        result && result.status === "waiting_for_approval";
 
       const log = {
         step_id: step.id,
         position: step.position,
         type: step.type,
-        status: "completed",
+        status: isWaitingForApproval ? "paused" : "completed",
         input: stepInput,
         result,
         started_at: startedAt,

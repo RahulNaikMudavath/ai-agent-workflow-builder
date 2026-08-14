@@ -204,20 +204,25 @@ router.get("/workflows/:id", async (req, res) => {
 });
 
 // Create workflow
-router.post("/workflows", async (req, res) => {
+router.post("/workflows", requireAuth, async (req, res) => {
   try {
     const {
       name,
       description,
       steps = [],
       org_id,
-    } = req.body;
+    } = req.body || {};
+
+
+    console.log("CREATE WORKFLOW BODY:", req.body);
+
 
     if (!name || !name.trim()) {
       return res.status(400).json({
         error: "Workflow name is required",
       });
     }
+
 
     if (!org_id) {
       return res.status(400).json({
@@ -935,7 +940,10 @@ router.post("/workflows/:id/run", async (req, res) => {
 });
 
 // Approve paused workflow and resume execution
-router.post("/workflow-runs/:runId/approve", async (req, res) => {
+router.post(
+  "/workflow-runs/:runId/approve",
+  requireAuth,
+  async (req, res) => {
   try {
     const { runId } = req.params;
 
@@ -1011,33 +1019,69 @@ router.post("/workflow-runs/:runId/approve", async (req, res) => {
     const stepRunsData = await graphqlRequest(stepRunsQuery, { runId });
     const stepRuns = stepRunsData.step_runs;
 
-    // Find the last completed step run
-    const completedSteps = steps.filter((step) =>
-      stepRuns.some(
-        (run) => run.workflow_step_id === step.id && run.status === "completed"
-      )
+    // Find the approval-gate step that paused this run
+    const pausedStepRun = stepRuns.find(
+      (run) => run.status === "paused"
     );
 
-    completedSteps.sort((a, b) => b.position - a.position);
-    const lastCompletedStep = completedSteps[0];
 
-    const startPosition = lastCompletedStep ? lastCompletedStep.position + 1 : 1;
-
-    const lastRun = lastCompletedStep
-      ? stepRuns.find((run) => run.workflow_step_id === lastCompletedStep.id)
+    const pausedStep = pausedStepRun
+      ? steps.find(
+          (step) => step.id === pausedStepRun.workflow_step_id
+        )
       : null;
 
-    let initialInput = null;
-    if (lastRun && lastRun.output) {
-      if (
-        lastRun.output.status === "waiting_for_approval" &&
-        lastRun.output.data !== undefined
-      ) {
-        initialInput = lastRun.output.data;
-      } else {
-        initialInput = lastRun.output;
-      }
+
+    if (!pausedStep) {
+      return res.status(400).json({
+        success: false,
+        error: "No paused approval gate found for this workflow run",
+      });
     }
+
+    const approveStepMutation = `
+      mutation ApproveStepRun(
+        $id: uuid!
+        $approved_by: uuid!
+        $approved_at: timestamptz!
+      ) {
+        update_step_runs_by_pk(
+          pk_columns: { id: $id }
+          _set: {
+            status: "completed"
+            approved_by: $approved_by
+            approved_at: $approved_at
+          }
+        ) {
+          id
+          status
+          approved_by
+          approved_at
+        }
+      }
+    `;
+
+    await graphqlRequest(approveStepMutation, {
+      id: pausedStepRun.id,
+      approved_by: userId,
+      approved_at: new Date().toISOString(),
+    });
+
+
+    console.log("✅ STEP RUN APPROVED:", pausedStepRun.id);
+
+
+    // Resume from the step AFTER the approval gate
+    const startPosition = pausedStep.position + 1;
+
+
+    // Use the approval gate's output as the next step's input
+    const initialInput =
+      pausedStepRun.output?.data !== undefined
+        ? pausedStepRun.output.data
+        : pausedStepRun.output;
+
+
     const initialOutput = initialInput;
 
     // Update workflow run status to running
@@ -1052,6 +1096,12 @@ router.post("/workflow-runs/:runId/approve", async (req, res) => {
       }
     `;
     await graphqlRequest(updateToRunningMutation, { id: runId });
+
+
+    console.log("✅ WORKFLOW RUN SET TO RUNNING:", runId);
+
+    console.log("🚀 RESUMING WORKFLOW FROM POSITION:", startPosition);
+
 
     // Execute the workflow starting from the next position
     const result = await executeWorkflow(
@@ -1156,6 +1206,9 @@ router.post("/workflow-runs/:runId/approve", async (req, res) => {
         },
       }
     );
+
+
+    console.log("🏁 RESUMED WORKFLOW RESULT:", result);
 
 
     // Update final workflow status

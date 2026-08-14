@@ -1,11 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { createClient } from "graphql-ws";
 import { nhost } from "./nhost";
 
 const ORG_ID = "03538bbd-b9fe-44a4-88c8-cc68713ead78";
 const API_URL = "http://localhost:5001/api";
-
-const HASURA_WS_URL = import.meta.env.VITE_HASURA_WS_URL;
 
 function App() {
   const [email, setEmail] = useState("");
@@ -13,12 +10,18 @@ function App() {
   const [user, setUser] = useState(null);
   const [loggingIn, setLoggingIn] = useState(false);
 
-  const getAuthHeaders = () => {
-    const session = nhost.getUserSession();
+  const getAuthHeaders = async () => {
+    const session = await nhost.refreshSession(0);
 
-    if (!session) {
-      throw new Error("Please sign in first");
+
+    console.log("AUTH SESSION:", session);
+    console.log("ACCESS TOKEN EXISTS:", !!session?.accessToken);
+
+
+    if (!session?.accessToken) {
+      throw new Error("No valid Nhost session. Please login again.");
     }
+
 
     return {
       "Content-Type": "application/json",
@@ -36,136 +39,171 @@ function App() {
   const [activeRunId, setActiveRunId] = useState(null);
 
   const subscriptionRef = useRef(null);
+  const pollingIntervalRef = useRef(null);
+
+
+  const startPolling = (runId) => {
+    if (!runId) return;
+
+
+    subscribeToStepRuns(runId);
+
+
+    setTimeout(() => {
+      subscribeToStepRuns(runId);
+    }, 1000);
+
+
+    setTimeout(() => {
+      subscribeToStepRuns(runId);
+    }, 2500);
+  };
+
 
   const subscribeToStepRuns = (runId) => {
     if (!runId) return;
 
 
-    if (subscriptionRef.current) {
-      subscriptionRef.current();
-      subscriptionRef.current = null;
+    console.log("🔄 Starting polling for:", runId);
+    setActiveRunId(runId);
+
+
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current);
     }
 
 
-    setActiveRunId(runId);
-    setStepRuns([]);
-
-
-    const client = createClient({
-      url: HASURA_WS_URL,
-
-
-      connectionParams: () => {
-        const session = nhost.getUserSession();
-
-
-        console.log("WS SESSION:", !!session);
-        console.log("WS URL:", HASURA_WS_URL);
-
-
-        return {
-          headers: {
-            Authorization: session
-              ? `Bearer ${session.accessToken}`
-              : "",
-          },
-        };
-      },
-
-
-      on: {
-        opened: () => {
-          console.log("✅ WebSocket opened");
-        },
-
-
-        connected: () => {
-          console.log("✅ WebSocket connected");
-        },
-
-
-        closed: (event) => {
-          console.log("❌ WebSocket closed:", event);
-        },
-
-
-        error: (error) => {
-          console.error("❌ WebSocket error:", error);
-        },
-      },
-    });
-
-
-    const query = `
-      subscription StepRuns($runId: uuid!) {
-        step_runs(
-          where: {
-            workflow_run_id: {
-              _eq: $runId
-            }
+    const poll = async () => {
+      try {
+        const response = await fetch(
+          `${API_URL}/workflow-runs/${runId}/steps`,
+          {
+            method: "GET",
+            headers: await getAuthHeaders(),
           }
-        ) {
-          id
-          workflow_run_id
-          workflow_step_id
-          status
+        );
+
+
+        if (!response.ok) {
+          console.error("Polling failed:", response.status);
+          return;
         }
-      }
-    `;
 
 
-    const subscription = client.subscribe(
-      {
-        query,
-        variables: {
-          runId,
-        },
-      },
-      {
-        next: (result) => {
-          console.log("🔥 STEP RUN UPDATE:", result);
+        const data = await response.json();
 
 
-          const runs = result.data?.step_runs || [];
+        console.log("🔥 UPDATED STEPS:", data);
 
 
-          if (result.data?.step_runs) {
-            setStepRuns(runs);
+        const runs =
+          data.stepRuns ||
+          data.steps ||
+          data.data ||
+          [];
+
+
+        console.log("📋 STEP RUNS:", runs);
+
+
+        setStepRuns(runs);
+
+
+        // Update the visible workflow cards
+        setSteps((currentSteps) =>
+          currentSteps.map((step) => {
+            const stepRun = runs.find(
+              (run) => run.workflow_step_id === step.id
+            );
+
+
+            if (!stepRun) {
+              return step;
+            }
+
+
+            console.log(
+              `🔄 Step ${step.type}: ${step.status} → ${stepRun.status}`
+            );
+
+
+            return {
+              ...step,
+              status: stepRun.status,
+            };
+          })
+        );
+
+
+        const status =
+          data.status ||
+          data.runStatus ||
+          data.workflowRun?.status;
+
+
+        console.log("📊 WORKFLOW STATUS:", status);
+
+
+        const hasPausedStep = runs.some(
+          (run) => run.status === "paused"
+        );
+
+
+        if (hasPausedStep || status === "paused") {
+          console.log("🟡 WORKFLOW PAUSED:", runId);
+
+
+          setPausedRunId(runId);
+
+
+          // IMPORTANT:
+          // DO NOT STOP POLLING HERE.
+          // Keep checking so approval can be detected automatically.
+        }
+
+
+        if (status === "running") {
+          console.log("🟢 WORKFLOW RUNNING:", runId);
+          setPausedRunId(null);
+        }
+
+
+        if (
+          status === "completed" ||
+          status === "failed"
+        ) {
+          console.log("🏁 WORKFLOW FINISHED:", status);
+
+
+          setPausedRunId(null);
+
+
+          if (pollingIntervalRef.current) {
+            clearInterval(pollingIntervalRef.current);
+            pollingIntervalRef.current = null;
           }
+        }
 
 
-          const latestRun = runs[runs.length - 1];
-          const latestStep = latestRun ? steps.find((s) => s.id === latestRun.workflow_step_id) : null;
-          const isPaused = latestStep?.type === "approval_gate" && latestRun?.status === "completed";
-
-
-          if (isPaused) {
-            setPausedRunId(runId);
-          } else {
-            setPausedRunId(null);
-          }
-        },
-
-
-        error: (error) => {
-          console.error("❌ STEP RUN SUBSCRIPTION ERROR:", error);
-        },
-
-
-        complete: () => {
-          console.log("Step run subscription completed");
-        },
+      } catch (error) {
+        console.error("❌ Polling error:", error);
       }
-    );
+    };
 
 
-    subscriptionRef.current = subscription;
+    // Immediately fetch
+    poll();
+
+
+    // Continue checking every second
+    pollingIntervalRef.current = setInterval(poll, 1000);
   };
 
   useEffect(() => {
     return () => {
-      if (subscriptionRef.current) {
-        subscriptionRef.current();
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
       }
     };
   }, []);
@@ -283,7 +321,7 @@ function App() {
     try {
       const response = await fetch(`${API_URL}/workflows`, {
         method: "POST",
-        headers: getAuthHeaders(),
+        headers: await getAuthHeaders(),
         body: JSON.stringify({
           name: workflowName,
           description: "Created from AI Agent Workflow Builder",
@@ -297,12 +335,19 @@ function App() {
 
       const data = await response.json();
 
+
       if (!response.ok) {
         throw new Error(data.error || "Failed to save workflow");
       }
 
+
       alert("Workflow saved successfully! 🎉");
       console.log("Saved workflow:", data);
+
+
+      if (data.steps && data.steps.length > 0) {
+        setSteps(data.steps);
+      }
     } catch (error) {
       console.error("Save error:", error);
       alert(error.message);
@@ -322,7 +367,7 @@ function App() {
 
       const saveResponse = await fetch(`${API_URL}/workflows`, {
         method: "POST",
-        headers: getAuthHeaders(),
+        headers: await getAuthHeaders(),
         body: JSON.stringify({
           name: workflowName,
           description: "Created from AI Agent Workflow Builder",
@@ -333,18 +378,25 @@ function App() {
           })),
         }),
       });
+      
 
       const workflow = await saveResponse.json();
 
+
       if (!saveResponse.ok) {
         throw new Error(workflow.error || "Failed to save workflow");
+      }
+
+
+      if (workflow.steps && workflow.steps.length > 0) {
+        setSteps(workflow.steps);
       }
 
       const runResponse = await fetch(
         `${API_URL}/workflows/${workflow.id}/start`,
         {
           method: "POST",
-          headers: getAuthHeaders(),
+          headers: await getAuthHeaders(),
           body: JSON.stringify({
             input: "Please analyze this customer support request.",
           }),
@@ -364,13 +416,12 @@ function App() {
 
       console.log("Workflow started:", runId);
 
+      setActiveRunId(runId);
 
       if (runId) {
-        subscribeToStepRuns(runId);
+        console.log("🚀 Starting polling for:", runId);
+        startPolling(runId);
       }
-
-
-      alert(`Workflow started successfully!\nRun ID: ${runId}`);
     } catch (error) {
       console.error("Workflow execution error:", error);
       alert(error.message);
@@ -378,61 +429,56 @@ function App() {
       setRunning(false);
     }
   };
-
   const approveWorkflow = async () => {
     if (!pausedRunId) {
+      alert("No paused workflow to approve");
       return;
     }
 
+
     try {
-      setApproving(true);
+      const runId = pausedRunId;
+
+
+      console.log("🟢 Approving workflow:", runId);
+
 
       const response = await fetch(
-        `${API_URL}/workflow-runs/${pausedRunId}/approve`,
+        `${API_URL}/workflow-runs/${runId}/approve`,
         {
           method: "POST",
-          headers: getAuthHeaders(),
+          headers: await getAuthHeaders(),
+          body: JSON.stringify({}),
         }
       );
 
-      const result = await response.json();
 
-      if (!response.ok) {
-        throw new Error(
-          result.error || "Failed to approve workflow"
-        );
+      const data = await response.json();
+
+
+      console.log("🟢 APPROVAL RESPONSE:", data);
+
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || "Failed to approve workflow");
       }
 
-      console.log("APPROVAL RESPONSE:", result);
 
-      if (result.workflow_run_id) {
-        subscribeToStepRuns(result.workflow_run_id);
-      }
+      alert("Workflow approved successfully!");
 
-      if (result.status === "completed") {
-        setPausedRunId(null);
 
-        alert(
-          `Workflow completed successfully! 🎉\n\nSteps executed after approval: ${
-            result.executionLog?.length || 0
-          }`
-        );
-      } else if (result.status === "failed") {
-        setPausedRunId(null);
+      console.log(
+        "🔄 Approval successful, polling will detect the update..."
+      );
 
-        alert(
-          `Workflow failed!\n\nError: ${
-            result.error || "Unknown error"
-          }`
-        );
-      }
+
     } catch (error) {
-      console.error("Approval error:", error);
+      console.error("❌ Approval error:", error);
       alert(error.message);
-    } finally {
-      setApproving(false);
     }
   };
+
+ 
 
   const getStepTitle = (type) => {
     if (type === "llm_call") return "LLM Call";
@@ -496,6 +542,16 @@ function App() {
       </div>
     );
   }
+
+  const getStepStatus = (step) => {
+    const stepRun = stepRuns.find(
+      (run) => run.workflow_step_id === step.id
+    );
+
+
+    return stepRun?.status || step.status || "pending";
+  };
+
 
   return (
     <div className="app">
@@ -584,7 +640,8 @@ function App() {
                 </p>
               </div>
             ) : (
-              <div className="steps">
+              <>
+                <div className="steps">
                 {steps.map((step, index) => {
                   const stepRun = stepRuns.find(
                     (run) => run.workflow_step_id === step.id
@@ -602,7 +659,7 @@ function App() {
                         <span>{getStepDescription(step.type)}</span>
 
                         <div className="step-status">
-                          Status: {stepStatus}
+                          Status: {getStepStatus(step)}
                         </div>
 
                         {step.type === "llm_call" && (
@@ -668,18 +725,28 @@ function App() {
                         )}
 
                         {step.type === "approval_gate" && (
-                          <input
-                            type="text"
-                            value={step.config.message || ""}
-                            placeholder="Approval message"
-                            onChange={(e) =>
-                              updateStepConfig(
-                                step.id,
-                                "message",
-                                e.target.value
-                              )
-                            }
-                          />
+                          <>
+                            <input
+                              type="text"
+                              value={step.config.message || ""}
+                              placeholder="Approval message"
+                              onChange={(e) =>
+                                updateStepConfig(
+                                  step.id,
+                                  "message",
+                                  e.target.value
+                                )
+                              }
+                            />
+                            {pausedRunId && (
+                              <button
+                                onClick={approveWorkflow}
+                                className="mt-4 rounded-lg bg-green-600 px-5 py-2.5 font-semibold text-white transition hover:bg-green-700"
+                              >
+                                ✅ Approve & Continue
+                              </button>
+                            )}
+                          </>
                         )}
                       </div>
 
@@ -693,7 +760,30 @@ function App() {
                   );
                 })}
               </div>
-            )}
+
+              {pausedRunId && (
+                <div className="mt-6 rounded-lg border border-yellow-500/40 bg-yellow-500/10 p-5">
+                  <div className="mb-3">
+                    <h3 className="text-lg font-semibold text-yellow-400">
+                      ⏸ Workflow Awaiting Approval
+                    </h3>
+
+                    <p className="mt-1 text-sm text-gray-400">
+                      This workflow is paused at the approval gate.
+                    </p>
+                  </div>
+
+                  <button
+                    onClick={approveWorkflow}
+                    disabled={approving}
+                    className="rounded-lg bg-green-600 px-5 py-2 font-semibold text-white hover:bg-green-700 disabled:opacity-50"
+                  >
+                    {approving ? "Approving..." : "✓ Approve & Continue"}
+                  </button>
+                </div>
+              )}
+            </>
+          )}
           </section>
         </div>
       </main>
