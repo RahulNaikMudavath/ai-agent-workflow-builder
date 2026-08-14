@@ -1,16 +1,28 @@
-async function executeWorkflow(workflow) {
+async function executeWorkflow(workflow, options = {}) {
   if (!workflow || !workflow.steps) {
     throw new Error("Invalid workflow");
   }
 
+  const startPosition = options.startPosition || 1;
+
   let currentData = {
-    input: workflow.input || null,
-    output: null,
+    input:
+      options.initialInput !== undefined
+        ? options.initialInput
+        : workflow.input || null,
+    output:
+      options.initialOutput !== undefined
+        ? options.initialOutput
+        : null,
   };
 
   const executionLog = [];
 
   for (const step of workflow.steps) {
+    if (step.position < startPosition) {
+      continue;
+    }
+
     const startedAt = new Date().toISOString();
 
     try {
@@ -37,6 +49,12 @@ async function executeWorkflow(workflow) {
           throw new Error(`Unsupported step type: ${step.type}`);
       }
 
+      const stepInput =
+        currentData.output !== null &&
+        currentData.output !== undefined
+          ? currentData.output
+          : currentData.input;
+
       currentData.output = result;
 
       executionLog.push({
@@ -44,12 +62,12 @@ async function executeWorkflow(workflow) {
         position: step.position,
         type: step.type,
         status: "completed",
+        input: stepInput,
         result,
         started_at: startedAt,
         completed_at: new Date().toISOString(),
       });
 
-      // Approval gate pauses execution
       if (result && result.status === "waiting_for_approval") {
         return {
           status: "waiting_for_approval",
