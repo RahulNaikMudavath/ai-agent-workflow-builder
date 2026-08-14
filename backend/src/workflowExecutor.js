@@ -104,8 +104,16 @@ async function executeWorkflow(workflow, options = {}) {
 
       currentData.output = result;
 
+
       const isWaitingForApproval =
         result && result.status === "waiting_for_approval";
+
+
+      const isConditionalFalse =
+        step.type === "conditional_branch" &&
+        result &&
+        result.condition === false;
+
 
       const log = {
         step_id: step.id,
@@ -118,11 +126,14 @@ async function executeWorkflow(workflow, options = {}) {
         completed_at: new Date().toISOString(),
       };
 
+
       executionLog.push(log);
+
 
       // ========================================
       // STEP COMPLETE CALLBACK
       // ========================================
+
 
       if (options.onStepComplete) {
         await options.onStepComplete({
@@ -135,16 +146,29 @@ async function executeWorkflow(workflow, options = {}) {
         });
       }
 
+
       // ========================================
       // APPROVAL PAUSE
       // ========================================
 
-      if (
-        result &&
-        result.status === "waiting_for_approval"
-      ) {
+
+      if (isWaitingForApproval) {
         return {
           status: "waiting_for_approval",
+          output: currentData.output,
+          executionLog,
+        };
+      }
+
+
+      // ========================================
+      // CONDITIONAL BRANCH FALSE
+      // ========================================
+
+
+      if (isConditionalFalse) {
+        return {
+          status: "completed",
           output: currentData.output,
           executionLog,
         };
