@@ -1,29 +1,4 @@
 const jwt = require("jsonwebtoken");
-const jwksRsa = require("jwks-rsa");
-
-const subdomain = process.env.NHOST_SUBDOMAIN;
-const region = process.env.NHOST_REGION;
-
-const authUrl =
-  process.env.NHOST_AUTH_URL ||
-  `https://${subdomain}.auth.${region}.nhost.run/v1`;
-
-const jwksClient = jwksRsa({
-  jwksUri: `${authUrl}/.well-known/jwks.json`,
-  cache: true,
-  rateLimit: true,
-  jwksRequestsPerMinute: 10,
-});
-
-function getKey(header, callback) {
-  jwksClient.getSigningKey(header.kid, (err, key) => {
-    if (err) {
-      return callback(err);
-    }
-
-    callback(null, key.getPublicKey());
-  });
-}
 
 async function requireAuth(req, res, next) {
   try {
@@ -38,11 +13,21 @@ async function requireAuth(req, res, next) {
 
     const token = authHeader.substring(7);
 
+    const secret = process.env.NHOST_JWT_SECRET;
+
+    if (!secret) {
+      console.error("NHOST_JWT_SECRET is missing");
+      return res.status(500).json({
+        success: false,
+        error: "JWT configuration missing",
+      });
+    }
+
     jwt.verify(
       token,
-      getKey,
+      secret,
       {
-        algorithms: ["RS256"],
+        algorithms: ["HS256"],
       },
       (err, decoded) => {
         if (err) {

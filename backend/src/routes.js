@@ -206,7 +206,7 @@ router.get("/workflows/:id", async (req, res) => {
 // Create workflow
 router.post("/workflows", requireAuth, async (req, res) => {
   try {
-    const {
+    let {
       name,
       description,
       steps = [],
@@ -225,9 +225,46 @@ router.post("/workflows", requireAuth, async (req, res) => {
 
 
     if (!org_id) {
-      return res.status(400).json({
-        error: "Organization ID is required",
-      });
+      const userId = getHasuraUserId(req);
+
+
+      console.log("👤 LOGGED USER:", userId);
+
+
+      const userOrgsQuery = `
+        query GetUserOrgs($userId: uuid!) {
+          org_members(
+            where: { user_id: { _eq: $userId } }
+            limit: 1
+          ) {
+            org_id
+            role
+          }
+        }
+      `;
+
+
+      const orgsData = await graphqlRequest(userOrgsQuery, { userId });
+
+
+      console.log("🏢 USER ORGANIZATIONS:", orgsData.org_members);
+
+
+      const member = orgsData.org_members?.[0];
+
+
+      if (!member) {
+        return res.status(400).json({
+          error: "User has no organization membership",
+        });
+      }
+
+
+      org_id = member.org_id;
+
+
+      console.log("✅ SELECTED ORG:", org_id);
+      console.log("✅ USER ROLE:", member.role);
     }
 
     // Create workflow
@@ -253,13 +290,16 @@ router.post("/workflows", requireAuth, async (req, res) => {
       }
     `;
 
+
     const workflowData = await graphqlRequest(workflowMutation, {
       name: name.trim(),
       description: description || null,
       org_id,
     });
 
+
     const workflow = workflowData.insert_workflows_one;
+
 
     if (!workflow) {
       return res.status(500).json({
@@ -267,8 +307,14 @@ router.post("/workflows", requireAuth, async (req, res) => {
       });
     }
 
-    // Create workflow steps
+
+    // ========================================
+    // CREATE WORKFLOW STEPS
+    // ========================================
+
+
     let createdSteps = [];
+
 
     if (steps.length > 0) {
       const stepRows = steps.map((step, index) => ({
@@ -277,6 +323,7 @@ router.post("/workflows", requireAuth, async (req, res) => {
         type: step.type,
         config: step.config || {},
       }));
+
 
       const stepsMutation = `
         mutation CreateWorkflowSteps(
@@ -296,26 +343,41 @@ router.post("/workflows", requireAuth, async (req, res) => {
         }
       `;
 
+
       const stepsData = await graphqlRequest(stepsMutation, {
         objects: stepRows,
       });
+
 
       createdSteps =
         stepsData.insert_workflow_steps.returning;
     }
 
+
+    console.log(
+      `Workflow ${workflow.id} created in org ${org_id}`
+    );
+
+
     res.status(201).json({
       ...workflow,
       steps: createdSteps,
     });
+
+
   } catch (error) {
     console.error("Create workflow error:", error);
+
 
     res.status(500).json({
       error: error.message,
     });
   }
 });
+
+
+// Deleted duplicate triggerWorkflowRun route
+
 
 // Creates the run first so the frontend can subscribe immediately
 router.post("/workflows/:id/start", requireAuth, async (req, res) => {
@@ -939,6 +1001,73 @@ router.post("/workflows/:id/run", async (req, res) => {
   }
 });
 
+
+router.post("/actions/triggerWorkflowRun", async (req, res) => {
+  try {
+    const workflowId = req.body?.input?.workflow_id;
+
+
+    if (!workflowId) {
+      return res.status(400).json({
+        success: false,
+        message: "workflow_id is required",
+      });
+    }
+
+
+    console.log(
+      `Hasura Action triggerWorkflowRun received workflow: ${workflowId}`
+    );
+
+
+    console.log("AUTH HEADER RECEIVED:", !!req.headers.authorization);
+    console.log("AUTH HEADER LENGTH:", req.headers.authorization?.length || 0);
+    console.log("HEADER KEYS:", Object.keys(req.headers));
+
+
+    // Forward the original user's Authorization header
+    const authorization = req.headers.authorization;
+
+
+    if (!authorization) {
+      return res.status(401).json({
+        success: false,
+        message: "Authorization header is required",
+      });
+    }
+
+
+    // Reuse the existing workflow-start endpoint
+    const response = await fetch(
+      `http://localhost:5001/api/workflows/${workflowId}/start`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: authorization,
+        },
+        body: JSON.stringify({
+          input: req.body?.input?.input || null,
+        }),
+      }
+    );
+
+
+    const data = await response.json();
+
+
+    return res.status(response.status).json(data);
+  } catch (error) {
+    console.error("triggerWorkflowRun Action error:", error);
+
+
+    return res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+});
+
 // Webhook trigger
 router.post("/workflows/:id/webhook", async (req, res) => {
   try {
@@ -1246,10 +1375,10 @@ router.post(
   "/workflow-runs/:runId/approve",
   requireAuth,
   async (req, res) => {
-  try {
-    const { runId } = req.params;
+    try {
+      const { runId } = req.params;
 
-    const runQuery = `
+      const runQuery = `
       query GetRun($runId: uuid!) {
         workflow_runs_by_pk(id: $runId) {
           id
@@ -1258,14 +1387,14 @@ router.post(
         }
       }
     `;
-    const runData = await graphqlRequest(runQuery, { runId });
-    if (!runData.workflow_runs_by_pk) {
-      return res.status(404).json({ error: "Workflow run not found" });
-    }
-    const workflowId = runData.workflow_runs_by_pk.workflow_id;
+      const runData = await graphqlRequest(runQuery, { runId });
+      if (!runData.workflow_runs_by_pk) {
+        return res.status(404).json({ error: "Workflow run not found" });
+      }
+      const workflowId = runData.workflow_runs_by_pk.workflow_id;
 
-    // Fetch workflow steps
-    const workflowQuery = `
+      // Fetch workflow steps
+      const workflowQuery = `
       query GetWorkflow($id: uuid!) {
         workflows_by_pk(id: $id) {
           id
@@ -1283,30 +1412,30 @@ router.post(
         }
       }
     `;
-    const workflowData = await graphqlRequest(workflowQuery, { id: workflowId });
-    const workflow = workflowData.workflows_by_pk;
-    const steps = workflow.workflow_steps;
+      const workflowData = await graphqlRequest(workflowQuery, { id: workflowId });
+      const workflow = workflowData.workflows_by_pk;
+      const steps = workflow.workflow_steps;
 
-    // ========================================
-    // APPROVER SECURITY CHECK
-    // ========================================
-
-
-    const { userId, member } = await requireWorkflowAccess(
-      req,
-      workflow,
-      {
-        requiredRole: "owner_or_editor",
-      }
-    );
+      // ========================================
+      // APPROVER SECURITY CHECK
+      // ========================================
 
 
-    console.log(
-      `Approval requested by ${userId} (${member.role})`
-    );
+      const { userId, member } = await requireWorkflowAccess(
+        req,
+        workflow,
+        {
+          requiredRole: "owner_or_editor",
+        }
+      );
 
-    // Fetch existing step runs to determine start position and last output
-    const stepRunsQuery = `
+
+      console.log(
+        `Approval requested by ${userId} (${member.role})`
+      );
+
+      // Fetch existing step runs to determine start position and last output
+      const stepRunsQuery = `
       query GetStepRuns($runId: uuid!) {
         step_runs(
           where: { workflow_run_id: { _eq: $runId } }
@@ -1318,30 +1447,30 @@ router.post(
         }
       }
     `;
-    const stepRunsData = await graphqlRequest(stepRunsQuery, { runId });
-    const stepRuns = stepRunsData.step_runs;
+      const stepRunsData = await graphqlRequest(stepRunsQuery, { runId });
+      const stepRuns = stepRunsData.step_runs;
 
-    // Find the approval-gate step that paused this run
-    const pausedStepRun = stepRuns.find(
-      (run) => run.status === "paused"
-    );
+      // Find the approval-gate step that paused this run
+      const pausedStepRun = stepRuns.find(
+        (run) => run.status === "paused"
+      );
 
 
-    const pausedStep = pausedStepRun
-      ? steps.find(
+      const pausedStep = pausedStepRun
+        ? steps.find(
           (step) => step.id === pausedStepRun.workflow_step_id
         )
-      : null;
+        : null;
 
 
-    if (!pausedStep) {
-      return res.status(400).json({
-        success: false,
-        error: "No paused approval gate found for this workflow run",
-      });
-    }
+      if (!pausedStep) {
+        return res.status(400).json({
+          success: false,
+          error: "No paused approval gate found for this workflow run",
+        });
+      }
 
-    const approveStepMutation = `
+      const approveStepMutation = `
       mutation ApproveStepRun(
         $id: uuid!
         $approved_by: uuid!
@@ -1363,31 +1492,31 @@ router.post(
       }
     `;
 
-    await graphqlRequest(approveStepMutation, {
-      id: pausedStepRun.id,
-      approved_by: userId,
-      approved_at: new Date().toISOString(),
-    });
+      await graphqlRequest(approveStepMutation, {
+        id: pausedStepRun.id,
+        approved_by: userId,
+        approved_at: new Date().toISOString(),
+      });
 
 
-    console.log("✅ STEP RUN APPROVED:", pausedStepRun.id);
+      console.log("✅ STEP RUN APPROVED:", pausedStepRun.id);
 
 
-    // Resume from the step AFTER the approval gate
-    const startPosition = pausedStep.position + 1;
+      // Resume from the step AFTER the approval gate
+      const startPosition = pausedStep.position + 1;
 
 
-    // Use the approval gate's output as the next step's input
-    const initialInput =
-      pausedStepRun.output?.data !== undefined
-        ? pausedStepRun.output.data
-        : pausedStepRun.output;
+      // Use the approval gate's output as the next step's input
+      const initialInput =
+        pausedStepRun.output?.data !== undefined
+          ? pausedStepRun.output.data
+          : pausedStepRun.output;
 
 
-    const initialOutput = initialInput;
+      const initialOutput = initialInput;
 
-    // Update workflow run status to running
-    const updateToRunningMutation = `
+      // Update workflow run status to running
+      const updateToRunningMutation = `
       mutation UpdateToRunning($id: uuid!) {
         update_workflow_runs_by_pk(
           pk_columns: { id: $id }
@@ -1397,27 +1526,27 @@ router.post(
         }
       }
     `;
-    await graphqlRequest(updateToRunningMutation, { id: runId });
+      await graphqlRequest(updateToRunningMutation, { id: runId });
 
 
-    console.log("✅ WORKFLOW RUN SET TO RUNNING:", runId);
+      console.log("✅ WORKFLOW RUN SET TO RUNNING:", runId);
 
-    console.log("🚀 RESUMING WORKFLOW FROM POSITION:", startPosition);
+      console.log("🚀 RESUMING WORKFLOW FROM POSITION:", startPosition);
 
 
-    // Execute the workflow starting from the next position
-    const result = await executeWorkflow(
-      {
-        ...workflow,
-        steps,
-      },
-      {
-        startPosition,
-        initialInput,
-        initialOutput,
-        workflowRunId: runId,
-        onStepStart: async ({ step, input }) => {
-          const mutation = `
+      // Execute the workflow starting from the next position
+      const result = await executeWorkflow(
+        {
+          ...workflow,
+          steps,
+        },
+        {
+          startPosition,
+          initialInput,
+          initialOutput,
+          workflowRunId: runId,
+          onStepStart: async ({ step, input }) => {
+            const mutation = `
             mutation CreateRunningStepRun(
               $workflow_run_id: uuid!
               $workflow_step_id: uuid!
@@ -1444,27 +1573,27 @@ router.post(
             }
           `;
 
-          await graphqlRequest(mutation, {
-            workflow_run_id: runId,
-            workflow_step_id: step.id,
-            status: "running",
-            input: input ?? null,
-            attempt_count: 1,
-          });
-        },
+            await graphqlRequest(mutation, {
+              workflow_run_id: runId,
+              workflow_step_id: step.id,
+              status: "running",
+              input: input ?? null,
+              attempt_count: 1,
+            });
+          },
 
-        // ========================================
-        // STEP COMPLETE
-        // ========================================
+          // ========================================
+          // STEP COMPLETE
+          // ========================================
 
-        onStepComplete: async ({
-          step,
-          result,
-          status,
-          error,
-          completedAt,
-        }) => {
-          const mutation = `
+          onStepComplete: async ({
+            step,
+            result,
+            status,
+            error,
+            completedAt,
+          }) => {
+            const mutation = `
             mutation UpdateStepRun(
               $workflow_run_id: uuid!
               $workflow_step_id: uuid!
@@ -1498,26 +1627,26 @@ router.post(
             }
           `;
 
-          await graphqlRequest(mutation, {
-            workflow_run_id: runId,
-            workflow_step_id: step.id,
-            status,
-            output: result ?? null,
-            error: error || null,
-          });
-        },
-      }
-    );
+            await graphqlRequest(mutation, {
+              workflow_run_id: runId,
+              workflow_step_id: step.id,
+              status,
+              output: result ?? null,
+              error: error || null,
+            });
+          },
+        }
+      );
 
 
-    console.log("🏁 RESUMED WORKFLOW RESULT:", result);
+      console.log("🏁 RESUMED WORKFLOW RESULT:", result);
 
 
-    // Update final workflow status
-    const finalStatus = result.status;
+      // Update final workflow status
+      const finalStatus = result.status;
 
 
-    const updateRunMutation = `
+      const updateRunMutation = `
       mutation UpdateWorkflowRun(
         $id: uuid!
         $status: String!
@@ -1540,23 +1669,23 @@ router.post(
     `;
 
 
-    const updatedRun = await graphqlRequest(updateRunMutation, {
-      id: runId,
-      status: finalStatus,
-      completed_at:
-        finalStatus === "running"
-          ? null
-          : new Date().toISOString(),
-    });
+      const updatedRun = await graphqlRequest(updateRunMutation, {
+        id: runId,
+        status: finalStatus,
+        completed_at:
+          finalStatus === "running"
+            ? null
+            : new Date().toISOString(),
+      });
 
 
-    // ========================================
-    // INCREMENT ORGANIZATION USAGE
-    // ========================================
+      // ========================================
+      // INCREMENT ORGANIZATION USAGE
+      // ========================================
 
 
-    if (result.status === "completed") {
-      const incrementQuotaMutation = `
+      if (result.status === "completed") {
+        const incrementQuotaMutation = `
         mutation IncrementQuota($id: uuid!) {
           update_organizations_by_pk(
             pk_columns: { id: $id }
@@ -1572,31 +1701,31 @@ router.post(
       `;
 
 
-      await graphqlRequest(incrementQuotaMutation, {
-        id: workflow.org_id,
+        await graphqlRequest(incrementQuotaMutation, {
+          id: workflow.org_id,
+        });
+      }
+
+
+      res.json({
+        success: true,
+        workflow_run_id: runId,
+        status: finalStatus,
+        output: result.output || null,
+        executionLog: result.executionLog || [],
+        workflowRun:
+          updatedRun.update_workflow_runs_by_pk,
+      });
+    } catch (error) {
+      console.error("Approval error:", error);
+
+
+      res.status(500).json({
+        success: false,
+        error: error.message,
       });
     }
-
-
-    res.json({
-      success: true,
-      workflow_run_id: runId,
-      status: finalStatus,
-      output: result.output || null,
-      executionLog: result.executionLog || [],
-      workflowRun:
-        updatedRun.update_workflow_runs_by_pk,
-    });
-  } catch (error) {
-    console.error("Approval error:", error);
-
-
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
-  }
-});
+  });
 
 
 // ========================================

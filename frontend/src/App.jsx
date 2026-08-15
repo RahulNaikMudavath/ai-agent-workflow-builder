@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { nhost } from "./nhost";
 
-const ORG_ID = "f8b0af85-6339-4984-a8b5-9657f3b89b0e";
 const API_URL = "http://localhost:5001/api";
 
 function App() {
@@ -14,7 +13,15 @@ function App() {
     const session = await nhost.refreshSession(0);
 
 
-    console.log("AUTH SESSION:", session);
+    console.log("🔥 SESSION:", session);
+    console.log("🔥 ACCESS TOKEN:", session?.accessToken);
+    console.log("ACTUAL USER:", session?.user);
+    console.log(
+      "ACTUAL TOKEN PAYLOAD:",
+      JSON.parse(atob(session.accessToken.split(".")[1]))
+    );
+
+
     console.log("ACCESS TOKEN EXISTS:", !!session?.accessToken);
 
 
@@ -42,29 +49,22 @@ function App() {
   const pollingIntervalRef = useRef(null);
 
 
+  useEffect(() => {
+    const webhookRunId = new URLSearchParams(window.location.search).get("runId");
+
+
+    if (webhookRunId) {
+      console.log("🔥 WEBHOOK RUN FROM URL:", webhookRunId);
+      setPausedRunId(webhookRunId);
+      startPolling(webhookRunId);
+    }
+  }, []);
+
+
   const startPolling = (runId) => {
     if (!runId) return;
 
 
-    subscribeToStepRuns(runId);
-
-
-    setTimeout(() => {
-      subscribeToStepRuns(runId);
-    }, 1000);
-
-
-    setTimeout(() => {
-      subscribeToStepRuns(runId);
-    }, 2500);
-  };
-
-
-  const subscribeToStepRuns = (runId) => {
-    if (!runId) return;
-
-
-    console.log("🔄 Starting polling for:", runId);
     setActiveRunId(runId);
 
 
@@ -73,130 +73,133 @@ function App() {
     }
 
 
-    const poll = async () => {
-      try {
-        const response = await fetch(
-          `${API_URL}/workflow-runs/${runId}/steps`,
-          {
-            method: "GET",
-            headers: await getAuthHeaders(),
-          }
-        );
+    subscribeToStepRuns(runId);
 
 
-        if (!response.ok) {
-          console.error("Polling failed:", response.status);
-          return;
+    pollingIntervalRef.current = setInterval(() => {
+      subscribeToStepRuns(runId);
+    }, 1000);
+  };
+
+
+  const subscribeToStepRuns = async (runId) => {
+    if (!runId) return;
+
+
+    console.log("🔄 Starting polling check for:", runId);
+
+
+    try {
+      const response = await fetch(
+        `${API_URL}/workflow-runs/${runId}/steps`,
+        {
+          method: "GET",
+          headers: await getAuthHeaders(),
         }
+      );
 
 
-        const data = await response.json();
-
-
-        console.log("🔥 UPDATED STEPS:", data);
-
-
-        const runs =
-          data.stepRuns ||
-          data.steps ||
-          data.data ||
-          [];
-
-
-        console.log("📋 STEP RUNS:", runs);
-
-
-        setStepRuns(runs);
-
-
-        // Update the visible workflow cards
-        setSteps((currentSteps) =>
-          currentSteps.map((step) => {
-            const stepRun = runs.find(
-              (run) => run.workflow_step_id === step.id
-            );
-
-
-            if (!stepRun) {
-              return step;
-            }
-
-
-            console.log(
-              `🔄 Step ${step.type}: ${step.status} → ${stepRun.status}`
-            );
-
-
-            return {
-              ...step,
-              status: stepRun.status,
-            };
-          })
-        );
-
-
-        const status =
-          data.status ||
-          data.runStatus ||
-          data.workflowRun?.status;
-
-
-        console.log("📊 WORKFLOW STATUS:", status);
-
-
-        const hasPausedStep = runs.some(
-          (run) => run.status === "paused"
-        );
-
-
-        if (hasPausedStep || status === "paused") {
-          console.log("🟡 WORKFLOW PAUSED:", runId);
-
-
-          setPausedRunId(runId);
-
-
-          // IMPORTANT:
-          // DO NOT STOP POLLING HERE.
-          // Keep checking so approval can be detected automatically.
-        }
-
-
-        if (status === "running") {
-          console.log("🟢 WORKFLOW RUNNING:", runId);
-          setPausedRunId(null);
-        }
-
-
-        if (
-          status === "completed" ||
-          status === "failed"
-        ) {
-          console.log("🏁 WORKFLOW FINISHED:", status);
-
-
-          setPausedRunId(null);
-
-
-          if (pollingIntervalRef.current) {
-            clearInterval(pollingIntervalRef.current);
-            pollingIntervalRef.current = null;
-          }
-        }
-
-
-      } catch (error) {
-        console.error("❌ Polling error:", error);
+      if (!response.ok) {
+        console.error("Polling failed:", response.status);
+        return;
       }
-    };
 
 
-    // Immediately fetch
-    poll();
+      const data = await response.json();
 
 
-    // Continue checking every second
-    pollingIntervalRef.current = setInterval(poll, 1000);
+      console.log("🔥 UPDATED STEPS:", data);
+
+
+      const runs =
+        data.stepRuns ||
+        data.steps ||
+        data.data ||
+        [];
+
+
+      console.log("📋 STEP RUNS:", runs);
+
+
+      setStepRuns(runs);
+
+
+      // Update the visible workflow cards
+      setSteps((currentSteps) =>
+        currentSteps.map((step) => {
+          const stepRun = runs.find(
+            (run) => run.workflow_step_id === step.id
+          );
+
+
+          if (!stepRun) {
+            return step;
+          }
+
+
+          console.log(
+            `🔄 Step ${step.type}: ${step.status} → ${stepRun.status}`
+          );
+
+
+          return {
+            ...step,
+            status: stepRun.status,
+          };
+        })
+      );
+
+
+      const status =
+        data.status ||
+        data.runStatus ||
+        data.workflowRun?.status;
+
+
+      console.log("📊 WORKFLOW STATUS:", status);
+
+
+      if (
+        status === "completed" ||
+        status === "failed" ||
+        status === "paused"
+      ) {
+        if (pollingIntervalRef.current) {
+          clearInterval(pollingIntervalRef.current);
+          pollingIntervalRef.current = null;
+        }
+      }
+
+
+      const hasPausedStep = runs.some(
+        (run) => run.status === "paused"
+      );
+
+
+      if (hasPausedStep || status === "paused") {
+        console.log("🟡 WORKFLOW PAUSED:", runId);
+        setPausedRunId(runId);
+      }
+
+
+      if (status === "running") {
+        console.log("🟢 WORKFLOW RUNNING:", runId);
+        setPausedRunId(null);
+      }
+
+
+      if (
+        status === "completed" ||
+        status === "failed"
+      ) {
+        console.log("🏁 WORKFLOW FINISHED:", status);
+        setPausedRunId(null);
+      }
+
+
+    } catch (error) {
+      console.error("❌ Polling error:", error);
+    }
   };
 
   useEffect(() => {
@@ -315,7 +318,6 @@ function App() {
       alert("Please enter a workflow name");
       return;
     }
-    console.log("CURRENT ORG ID:", ORG_ID);
     setSaving(true);
 
     try {
@@ -325,7 +327,6 @@ function App() {
         body: JSON.stringify({
           name: workflowName,
           description: "Created from AI Agent Workflow Builder",
-          org_id: ORG_ID,
           steps: steps.map((step) => ({
             type: step.type,
             config: step.config,
@@ -371,7 +372,6 @@ function App() {
         body: JSON.stringify({
           name: workflowName,
           description: "Created from AI Agent Workflow Builder",
-          org_id: ORG_ID,
           steps: steps.map((step) => ({
             type: step.type,
             config: step.config,
@@ -434,9 +434,15 @@ function App() {
       alert("No paused workflow to approve");
       return;
     }
+    if (approving) return;
+
+
+    setApproving(true);
 
 
     try {
+
+
       const runId = pausedRunId;
 
 
@@ -467,14 +473,21 @@ function App() {
       alert("Workflow approved successfully!");
 
 
-      console.log(
-        "🔄 Approval successful, polling will detect the update..."
-      );
+      // IMPORTANT
+      setPausedRunId(null);
+
+
+      // IMPORTANT
+      // Start polling again because polling stopped
+      // when the workflow entered paused state.
+      startPolling(runId);
 
 
     } catch (error) {
       console.error("❌ Approval error:", error);
       alert(error.message);
+    } finally {
+      setApproving(false);
     }
   };
 
@@ -542,6 +555,23 @@ function App() {
       </div>
     );
   }
+
+  const formatOutput = (value) => {
+    if (value === null || value === undefined) return "";
+
+
+    if (typeof value === "string") {
+      return value;
+    }
+
+
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch {
+      return String(value);
+    }
+  };
+
 
   const getStepStatus = (step) => {
     const stepRun = stepRuns.find(
@@ -760,6 +790,91 @@ function App() {
                   );
                 })}
               </div>
+
+              {stepRuns.length > 0 && (
+                <div className="mt-6 rounded-xl border border-gray-700 bg-gray-900 p-6">
+                  <h2 className="text-xl font-bold text-white">
+                    Workflow Execution
+                  </h2>
+
+
+                  <p className="mt-1 mb-5 text-sm text-gray-400">
+                    Step-by-step execution results
+                  </p>
+
+
+                  <div className="space-y-4">
+                    {stepRuns.map((run, index) => {
+                      const step = steps.find(
+                        (s) => s.id === run.workflow_step_id
+                      );
+
+
+                      const title =
+                        step?.type === "llm_call"
+                          ? "LLM Call"
+                          : step?.type === "conditional_branch"
+                          ? "Conditional Branch"
+                          : step?.type === "http_request"
+                          ? "HTTP Request"
+                          : step?.type === "approval_gate"
+                          ? "Approval Gate"
+                          : step?.type === "db_write"
+                          ? "DB Write"
+                          : `Step ${index + 1}`;
+
+
+                      return (
+                        <div
+                          key={run.id}
+                          className="rounded-lg border border-gray-700 bg-black p-4"
+                        >
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <h3 className="font-semibold text-white">
+                                {title}
+                              </h3>
+
+
+                              <p className="text-sm text-gray-400">
+                                Status: {run.status}
+                              </p>
+                            </div>
+
+
+                            <span className="rounded-full bg-purple-500/20 px-3 py-1 text-xs font-semibold text-purple-300">
+                              {run.status}
+                            </span>
+                          </div>
+
+
+                          {run.output !== null &&
+                            run.output !== undefined && (
+                              <div className="mt-4">
+                                <p className="mb-2 text-xs font-semibold uppercase text-gray-500">
+                                  Output
+                                </p>
+
+
+                                <pre className="max-h-60 overflow-auto rounded-lg bg-gray-950 p-4 text-sm text-green-300">
+                                  {formatOutput(run.output)}
+                                </pre>
+                              </div>
+                            )}
+
+
+                          {run.error && (
+                            <div className="mt-3 rounded-lg bg-red-500/10 p-3 text-sm text-red-400">
+                              ❌ {run.error}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
 
               {pausedRunId && (
                 <div className="mt-6 rounded-lg border border-yellow-500/40 bg-yellow-500/10 p-5">
