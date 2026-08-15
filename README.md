@@ -2,6 +2,52 @@
 
 A full-stack AI Agent Workflow Builder that allows users to create, configure, execute, and monitor multi-step workflows with AI, HTTP, conditional, approval, database, notification, and scheduled trigger capabilities.
 
+## 📊 System Architecture & Flowcharts
+
+### 🏗️ Architecture Design
+
+```mermaid
+graph TD
+    subgraph Frontend [React Web Application]
+        Canvas[Workflow Canvas]
+        ExecutionResults[Workflow Execution Panel]
+        NhostSDK[Nhost Auth / client SDK]
+    end
+
+    subgraph Backend [Express API Server]
+        AuthMiddleware[Auth Middleware HS256]
+        Router[API Routes]
+        WorkflowExecutor[Workflow Executor]
+        Scheduler[node-cron Scheduler]
+    end
+
+    subgraph Database [Hasura GraphQL Engine]
+        DB[(PostgreSQL)]
+    end
+
+    Canvas -->|POST /workflows| Router
+    Canvas -->|POST /workflow-runs/:runId/approve| Router
+    Canvas -->|GET /workflow-runs/:runId/steps| Router
+    NhostSDK -->|JWT Token| AuthMiddleware
+    Router -->|GraphQL Admin Requests| DB
+    WorkflowExecutor -->|Execute Steps| DB
+    Scheduler -->|Poll Schedules & Run Workflows| WorkflowExecutor
+```
+
+### 👤 Approval Gate & Webhook Resumption Lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> Running : Execute Step
+    Running --> Paused : Approval Gate Reached
+    Paused --> Polling : Frontend Polls Status
+    Polling --> Waiting : Awaiting Human Click
+    Waiting --> Resumed : POST /approve
+    Resumed --> Running : Complete Step & Continue
+    Running --> Completed : Workflow Finished
+    Completed --> [*]
+```
+
 ## Features
 
 - User authentication with Nhost
