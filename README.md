@@ -1,146 +1,316 @@
 # AI Agent Workflow Builder
 
-A premium, interactive web application and backend execution engine for constructing, scheduling, and running automated multi-step AI agent workflows.
+A full-stack AI Agent Workflow Builder that allows users to create, configure, execute, and monitor multi-step workflows with AI, HTTP, conditional, approval, database, notification, and scheduled trigger capabilities.
 
----
+## Features
 
-## 🚀 Key Features
+- User authentication with Nhost
+- Organization-based workflow isolation
+- Role-aware workflow access
+- Visual workflow builder
+- LLM Call step
+- HTTP Request step
+- Conditional Branch step
+- Human Approval Gate with pause/resume
+- Database Write step
+- Notification step
+- Manual workflow execution
+- Scheduled workflow execution using cron
+- Workflow run and step-level execution tracking
+- Execution status, outputs, and error tracking
+- Organization quota tracking
+- Real-time workflow execution updates
 
-*   **Visual Workflow Canvas**: Dynamically build sequential pipelines using specialized agent cards (LLM Call, HTTP Request, Conditional Branch, Approval Gate, DB Write, Notify).
-*   **Interactive Approval Gates**: Pause executions mid-run at approval cards, monitor the paused status, and resume the exact execution flow using secure admin approval actions.
-*   **Real-time Status Polling**: Continuous, resource-efficient synchronization of active runs to update UI cards and display detailed logs dynamically.
-*   **Background Webhook Triggers**: Public endpoint (`POST /api/workflows/:id/webhook`) to execute workflows asynchronously in the background from external integrations.
-*   **Hasura Actions Integration**: Custom action adapter handler (`POST /api/actions/triggerWorkflowRun`) compatible with Hasura's action specifications.
-*   **Dynamic Scheduler Daemon**: Background scheduler service utilizing `node-cron` to fetch and execute `"scheduled"` type workflow triggers automatically based on cron expressions.
-*   **Usage Quotas**: Organization-wide quotas that check limits before starting execution, block runs if exceeded, and increment usage counts upon successful workflow completion.
+## Tech Stack
 
----
+### Frontend
+- React
+- Vite
+- Nhost Auth
+- GraphQL / GraphQL WebSocket
 
-## 🏗️ Architecture
+### Backend
+- Node.js
+- Express
+- node-cron
+- JWT authentication
+- Hasura GraphQL API
 
-```mermaid
-graph TD
-    subgraph Frontend [React Web Application]
-        Canvas[Workflow Canvas]
-        ExecutionResults[Workflow Execution Panel]
-        NhostSDK[Nhost Auth / client SDK]
-    end
+### Database / Backend Services
+- Nhost
+- PostgreSQL
+- Hasura GraphQL
+- Nhost Authentication
 
-    subgraph Backend [Express API Server]
-        AuthMiddleware[Auth Middleware HS256]
-        Router[API Routes]
-        WorkflowExecutor[Workflow Executor]
-        Scheduler[node-cron Scheduler]
-    end
+## Project Structure
 
-    subgraph Database [Hasura GraphQL Engine]
-        DB[(PostgreSQL)]
-    end
-
-    Canvas -->|POST /workflows| Router
-    Canvas -->|POST /workflow-runs/:runId/approve| Router
-    Canvas -->|GET /workflow-runs/:runId/steps| Router
-    NhostSDK -->|JWT Token| AuthMiddleware
-    Router -->|GraphQL Admin Requests| DB
-    WorkflowExecutor -->|Execute Steps| DB
-    Scheduler -->|Poll Schedules & Run Workflows| WorkflowExecutor
+```text
+ai-agent-workflow-builder/
+├── frontend/
+│   ├── src/
+│   ├── package.json
+│   └── .env
+├── backend/
+│   ├── src/
+│   │   ├── authMiddleware.js
+│   │   ├── routes.js
+│   │   ├── server.js
+│   │   ├── scheduler.js
+│   │   ├── supabase.js
+│   │   └── workflowExecutor.js
+│   ├── package.json
+│   └── .env
+└── README.md
 ```
 
----
+## Prerequisites
 
-## 🛠️ Step Types
+- Node.js 18+ recommended
+- npm
+- A Nhost project with PostgreSQL, Hasura, and Authentication configured
+- Git
 
-1.  **🤖 LLM Call**: Prompts an LLM with custom configs to generate AI responses.
-2.  **🌐 HTTP Request**: Calls external REST APIs (GET, POST, PUT, DELETE) to fetch or push payload data.
-3.  **🔀 Conditional Branch**: Short-circuits workflow execution or forks paths based on matching criteria (e.g., `"response is not empty"`).
-4.  **👤 Approval Gate**: Safely halts execution, updating status fields to `"paused"`, awaiting owner or editor approval before proceeding.
-5.  **💾 DB Write**: Automatically saves outputs to the `workflow_data` table.
-6.  **🔔 Notify**: Dispatches structured execution alerts and logs payloads to console streams.
+## Local Setup
 
----
+Clone the repository:
 
-## ⚙️ Environment Variables
+```bash
+git clone https://github.com/RahulNaikMudavath/ai-agent-workflow-builder.git
+cd ai-agent-workflow-builder
+```
 
-### Backend (`/backend/.env`)
+### Backend
 
-```ini
-NHOST_GRAPHQL_URL=https://<your-subdomain>.graphql.<your-region>.nhost.run/v1
-NHOST_AUTH_URL=https://<your-subdomain>.auth.<your-region>.nhost.run/v1
-NHOST_SUBDOMAIN=<your-subdomain>
-NHOST_REGION=<your-region>
-NHOST_ADMIN_SECRET=<your-hasura-admin-secret>
-NHOST_JWT_SECRET=<your-nhost-jwt-secret>
+```bash
+cd backend
+npm install
+```
+
+Create `backend/.env`:
+
+```env
+NHOST_GRAPHQL_URL=your_nhost_graphql_url
+NHOST_AUTH_URL=your_nhost_auth_url
+NHOST_SUBDOMAIN=your_nhost_subdomain
+NHOST_REGION=your_nhost_region
+NHOST_ADMIN_SECRET=your_nhost_admin_secret
+NHOST_JWT_SECRET=your_nhost_jwt_secret
 PORT=5001
 ```
 
-### Frontend (`/frontend/.env`)
-
-```ini
-VITE_HASURA_WS_URL=wss://<your-subdomain>.graphql.<your-region>.nhost.run/v1/graphql
-```
-
----
-
-## 📦 Getting Started
-
-### 1. Prerequisites
-Make sure you have [Node.js](https://nodejs.org/) installed on your machine.
-
-### 2. Install Dependencies
-
-In the project root:
+Start the backend:
 
 ```bash
-# Install backend packages
-cd backend
-npm install
-
-# Install frontend packages
-cd ../frontend
-npm install
-```
-
-### 3. Start Development Servers
-
-Start both servers in parallel:
-
-```bash
-# Run backend (Server will run on http://localhost:5001)
-cd backend
-npm run dev
-
-# Run frontend (Vite dev server will launch)
-cd ../frontend
 npm run dev
 ```
 
----
+The API runs locally at:
 
-## 📡 API Reference
+```text
+http://localhost:5001
+```
 
-### Workflows
+### Frontend
 
-*   `POST /api/workflows`
-    *   **Auth**: Required (Owner or Editor)
-    *   **Description**: Creates a new workflow and registers its sequential steps in PostgreSQL.
-*   `POST /api/workflows/:id/start`
-    *   **Auth**: Required
-    *   **Description**: Initiates a workflow run, validates organization call quotas, and executes steps.
-*   `POST /api/workflows/:id/webhook`
-    *   **Auth**: Public
-    *   **Description**: Triggers execution asynchronously in the background. Useful for webhook integrations (e.g. Stripe, GitHub).
+Open another terminal:
 
-### Resumption & Monitoring
+```bash
+cd frontend
+npm install
+```
 
-*   `POST /api/workflow-runs/:runId/approve`
-    *   **Auth**: Required (Owner or Editor)
-    *   **Description**: Approves a paused step, updates step-run status to `"completed"`, records approval metadata, and resumes execution from the next step.
-*   `GET /api/workflow-runs/:runId/steps`
-    *   **Auth**: Required
-    *   **Description**: Fetches execution logs, workflow statuses, and individual step runs.
+Create `frontend/.env`:
 
-### Hasura Action Adapter
+```env
+VITE_API_URL=http://localhost:5001/api
+VITE_HASURA_WS_URL=your_hasura_websocket_url
+```
 
-*   `POST /api/actions/triggerWorkflowRun`
-    *   **Auth**: Bearer Token forwarding
-    *   **Description**: Proxies Hasura Action calls to the start handler. Expects `workflow_id` in the input payload.
+Start the frontend:
+
+```bash
+npm run dev
+```
+
+The Vite development server will normally be available at:
+
+```text
+http://localhost:5173
+```
+
+## Environment Variables
+
+Environment variables contain credentials and deployment-specific configuration.
+
+Do not commit actual secrets to GitHub.
+
+Use placeholder values in local `.env` files and configure production secrets through the hosting provider's environment-variable settings.
+
+Required backend variables:
+
+```text
+NHOST_GRAPHQL_URL
+NHOST_AUTH_URL
+NHOST_SUBDOMAIN
+NHOST_REGION
+NHOST_ADMIN_SECRET
+NHOST_JWT_SECRET
+PORT
+```
+
+Required frontend variables:
+
+```text
+VITE_API_URL
+VITE_HASURA_WS_URL
+```
+
+## Running a Workflow
+
+1. Sign in using an Nhost-authenticated account.
+2. Create a workflow and provide a workflow name.
+3. Add workflow steps from the available step types.
+4. Configure each step.
+5. Save the workflow.
+6. Start the workflow.
+7. Monitor step execution and workflow status.
+8. If an Approval Gate is reached, the workflow pauses until an authorized user approves it.
+9. After approval, execution resumes from the paused position.
+10. The workflow completes after all remaining steps finish successfully.
+
+## Supported Workflow Steps
+
+### LLM Call
+Uses the configured LLM operation to process a prompt and produce an output.
+
+### HTTP Request
+Sends an HTTP request to a configured endpoint and passes the result through the workflow.
+
+### Conditional Branch
+Evaluates a configured condition and determines the next workflow path.
+
+### Approval Gate
+Pauses execution until an authorized user explicitly approves the workflow step.
+
+### DB Write
+Persists workflow output/data to the configured workflow data storage.
+
+### Notify
+Creates a workflow notification containing the execution result.
+
+## Scheduled Workflows
+
+Scheduled execution is implemented using `node-cron`.
+
+A scheduled trigger is stored in the `workflow_triggers` table with a cron expression in its JSON configuration.
+
+For example:
+
+```json
+{
+  "cron": "*/1 * * * *"
+}
+```
+
+When the scheduler starts, it loads active scheduled triggers and creates cron jobs. The scheduler periodically synchronizes trigger configuration so newly created or changed schedules can be picked up.
+
+Scheduled executions use the same workflow executor as manual executions.
+
+## Production Deployment
+
+### Frontend
+
+The frontend is deployed using Vercel.
+
+Production API configuration:
+
+```text
+VITE_API_URL=https://ai-agent-workflow-builder-p1c6.onrender.com/api
+```
+
+### Backend
+
+The backend is deployed using Render.
+
+Production backend:
+
+```text
+https://ai-agent-workflow-builder-p1c6.onrender.com
+```
+
+### Live Application
+
+```text
+https://ai-agent-workflow-builder-rho-sage.vercel.app
+```
+
+## Security
+
+- Authentication is handled through Nhost.
+- Backend endpoints verify authenticated users.
+- Organization membership and roles are checked for protected workflow operations.
+- Workflow access is validated server-side rather than relying only on frontend restrictions.
+- Database/Hasura permissions provide an additional data-access boundary.
+- Secrets are stored in environment variables and are not committed to the repository.
+
+## Database
+
+The main application tables include:
+
+```text
+organizations
+org_members
+workflows
+workflow_steps
+workflow_runs
+step_runs
+workflow_data
+workflow_triggers
+```
+
+Workflow definitions and workflow execution history are separated so that reusable workflow configuration can be maintained independently from individual execution records.
+
+## Final Task Scenario
+
+The application supports the complete workflow scenario:
+
+```text
+LLM Call
+    ↓
+Conditional Branch
+    ↓
+HTTP Request
+    ↓
+Approval Gate
+    ↓
+DB Write
+    ↓
+Notify
+```
+
+The Approval Gate pauses the workflow and allows an authorized user to resume execution. The remaining steps then continue and the workflow is marked completed after successful execution.
+
+## API
+
+The backend exposes REST endpoints under:
+
+```text
+/api
+```
+
+Important workflow operations include:
+
+```text
+POST /api/workflows
+POST /api/workflows/:id/start
+POST /api/workflow-runs/:runId/approve
+POST /api/workflows/:id/webhook
+```
+
+Additional endpoints are available for workflow runs, execution tracking, and related operations.
+
+## Development Notes
+
+The project is designed as a full-stack workflow execution system. The frontend is responsible for workflow creation and monitoring, while the backend performs authorization, workflow execution, scheduled execution, approval handling, and database operations through the Hasura GraphQL API.
+
+For production deployment, configure all secrets and service URLs through the hosting provider rather than committing them to source control.
