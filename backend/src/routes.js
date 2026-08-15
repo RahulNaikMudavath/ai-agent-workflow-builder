@@ -1025,6 +1025,57 @@ router.post("/actions/triggerWorkflowRun", async (req, res) => {
     console.log("HEADER KEYS:", Object.keys(req.headers));
 
 
+    // ========================================
+    // ACTION-LEVEL ORGANIZATION + ROLE CHECK
+    // ========================================
+
+
+    const workflowQuery = `
+      query GetWorkflowForAction($id: uuid!) {
+        workflows_by_pk(id: $id) {
+          id
+          name
+          description
+          org_id
+          created_at
+        }
+      }
+    `;
+
+
+    const workflowData = await graphqlRequest(workflowQuery, {
+      id: workflowId,
+    });
+
+
+    const workflow = workflowData.workflows_by_pk;
+
+
+    if (!workflow) {
+      return res.status(404).json({
+        success: false,
+        message: "Workflow not found",
+      });
+    }
+
+
+    // IMPORTANT:
+    // The Action handler itself verifies that the caller
+    // belongs to the workflow's organization and has permission.
+    const { userId, member } = await requireWorkflowAccess(
+      req,
+      workflow,
+      {
+        requiredRole: "owner_or_editor",
+      }
+    );
+
+
+    console.log(
+      `Action authorized for workflow ${workflow.id} by ${userId} (${member.role})`
+    );
+
+
     // Forward the original user's Authorization header
     const authorization = req.headers.authorization;
 
