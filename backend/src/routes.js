@@ -1475,6 +1475,7 @@ router.post(
         $id: uuid!
         $approved_by: uuid!
         $approved_at: timestamptz!
+        $output: jsonb!
       ) {
         update_step_runs_by_pk(
           pk_columns: { id: $id }
@@ -1482,20 +1483,43 @@ router.post(
             status: "completed"
             approved_by: $approved_by
             approved_at: $approved_at
+            output: $output
           }
         ) {
           id
           status
+          output
           approved_by
           approved_at
         }
       }
     `;
 
+
+      const approvedOutput = {
+        data:
+          pausedStepRun.output?.data !== undefined
+            ? pausedStepRun.output.data
+            : pausedStepRun.output,
+
+
+        status: "approved",
+
+
+        message:
+          pausedStep.config?.message ||
+          "Workflow approved. Continuing execution.",
+
+
+        approved: true,
+      };
+
+
       await graphqlRequest(approveStepMutation, {
         id: pausedStepRun.id,
         approved_by: userId,
         approved_at: new Date().toISOString(),
+        output: approvedOutput,
       });
 
 

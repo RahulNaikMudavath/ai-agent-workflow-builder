@@ -221,3 +221,62 @@ input {
 .save-btn:hover {
   border-color: #7c3aed;
 }
+
+/* ========================================
+   EXECUTION RESULTS PANEL STYLES
+   ======================================== */
+.mt-6 { margin-top: 24px; }
+.mt-8 { margin-top: 32px; }
+.rounded-xl { border-radius: 12px; }
+.border { border: 1px solid; }
+.border-gray-700 { border-color: #374151; }
+.border-gray-800 { border-color: #1f2937; }
+.bg-gray-900 { background-color: #111827; }
+.bg-gray-900\/50 { background-color: rgba(17, 24, 39, 0.5); }
+.p-6 { padding: 24px; }
+.text-xl { font-size: 20px; }
+.font-bold { font-weight: 700; }
+.text-white { color: #ffffff; }
+.mt-1 { margin-top: 4px; }
+.mb-5 { margin-bottom: 20px; }
+.text-sm { font-size: 14px; }
+.text-gray-400 { color: #9ca3af; }
+.space-y-4 > * + * { margin-top: 16px; }
+.rounded-lg { border-radius: 8px; }
+.bg-black { background-color: #000000; }
+.bg-gray-950 { background-color: #030712; }
+.p-4 { padding: 16px; }
+.flex { display: flex; }
+.items-center { align-items: center; }
+.justify-between { justify-content: space-between; }
+.font-semibold { font-weight: 600; }
+.rounded-full { border-radius: 9999px; }
+.bg-purple-500\/20 { background-color: rgba(168, 85, 247, 0.2); }
+.px-3 { padding-left: 12px; padding-right: 12px; }
+.py-1 { padding-top: 4px; padding-bottom: 4px; }
+.text-xs { font-size: 12px; }
+.text-purple-300 { color: #d8b4fe; }
+.mt-4 { margin-top: 16px; }
+.mb-2 { margin-bottom: 8px; }
+.uppercase { text-transform: uppercase; }
+.text-gray-500 { color: #6b7280; }
+.max-h-60 { max-height: 240px; }
+.overflow-auto { overflow: auto; }
+.text-green-300 { color: #86efac; }
+.mt-3 { margin-top: 12px; }
+.bg-red-500\/10 { background-color: rgba(239, 68, 68, 0.1); }
+.p-3 { padding: 12px; }
+.text-red-400 { color: #fca5a5; }
+.gap-2 { gap: 8px; }
+.gap-3 { gap: 12px; }
+.cursor-not-allowed { cursor: not-allowed; }
+.opacity-50 { opacity: 0.5; }
+.bg-green-500\/20 { background-color: rgba(34, 197, 94, 0.2); }
+.text-green-400 { color: #4ade80; }
+.bg-yellow-500\/20 { background-color: rgba(234, 179, 8, 0.2); }
+.text-yellow-400 { color: #facc15; }
+.bg-blue-500\/20 { background-color: rgba(59, 130, 246, 0.2); }
+.text-blue-400 { color: #60a5fa; }
+.bg-red-500\/20 { background-color: rgba(239, 68, 68, 0.2); }
+.text-red-400 { color: #f87171; }
+.bg-gray-500\/20 { background-color: rgba(107, 114, 128, 0.2); }

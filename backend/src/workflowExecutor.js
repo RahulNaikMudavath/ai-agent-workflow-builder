@@ -97,6 +97,10 @@ async function executeWorkflow(workflow, options = {}) {
           result = executeApprovalGate(step, currentData);
           break;
 
+        case "notify":
+          result = await executeNotify(step, currentData);
+          break;
+
         default:
           throw new Error(`Unsupported step type: ${step.type}`);
       }
@@ -373,6 +377,50 @@ function executeApprovalGate(step, currentData) {
     approved: false,
     data: currentData.output,
   };
+}
+
+
+// ===============================
+// NOTIFY
+// ===============================
+
+
+async function executeNotify(step, currentData) {
+  const config = step.config || {};
+
+
+  const message =
+    config.message ||
+    "Workflow notification";
+
+
+  const channel =
+    config.channel ||
+    "log";
+
+
+  const input =
+    currentData.output !== null &&
+    currentData.output !== undefined
+      ? currentData.output
+      : currentData.input;
+
+
+  const notification = {
+    channel,
+    message,
+    data: input,
+    sent_at: new Date().toISOString(),
+  };
+
+
+  // For now, log notification to the backend.
+  // This keeps the workflow fully executable without
+  // requiring an external notification API.
+  console.log("🔔 WORKFLOW NOTIFICATION:", notification);
+
+
+  return notification;
 }
 
 
