@@ -38,6 +38,50 @@ async function runScheduledWorkflow(trigger) {
     }
 
 
+    // ========================================
+    // SCHEDULED WORKFLOW QUOTA CHECK
+    // ========================================
+
+
+    const quotaQuery = `
+      query GetOrganizationQuota($id: uuid!) {
+        organizations_by_pk(id: $id) {
+          id
+          calls_used
+          calls_allowed
+        }
+      }
+    `;
+
+
+    const quotaData = await graphqlRequest(quotaQuery, {
+      id: workflow.org_id,
+    });
+
+
+    const organization = quotaData.organizations_by_pk;
+
+
+    if (!organization) {
+      console.error(
+        `Organization not found for scheduled workflow ${workflow.id}`
+      );
+      return;
+    }
+
+
+    if (
+      organization.calls_allowed !== null &&
+      organization.calls_used >= organization.calls_allowed
+    ) {
+      console.error(
+        `⛔ Scheduled workflow blocked by quota: ${workflow.name} ` +
+        `(${organization.calls_used}/${organization.calls_allowed})`
+      );
+      return;
+    }
+
+
     console.log(
       `⏰ Running scheduled workflow: ${workflow.name}`
     );
